@@ -2120,12 +2120,18 @@ fn unstarted_slider(dom: &dyn Dom, el: ElId, verdicts: &mut std::collections::Ha
         return *v;
     }
     // A slide shows its text, or a picture: an image-only carousel that
-    // started shows its current image while every caption waits hidden.
+    // started shows its current image while every caption waits hidden. The
+    // picture has to be a slide's, inside the slider and spanning at least
+    // half its width: an arrow icon or a dot beside slides that are all
+    // hidden, or a backdrop on the slider's own box, starts nothing.
+    let slider_width = dom.rect(slider).width;
     let shows = |e: ElId| {
         let pictured = || {
             let r = dom.rect(e);
-            r.width >= 1.0
+            e != slider
+                && r.width >= 1.0
                 && r.height >= 1.0
+                && (!(slider_width.is_finite() && slider_width > 0.0) || r.width >= 0.5 * slider_width)
                 && (SLIDER_MEDIA_TAGS.contains(&tag_lower(dom, e).as_str())
                     || js::to_lower_case(&dom.style(e, "backgroundImage")).contains("url("))
         };
@@ -4300,11 +4306,18 @@ mod tests {
         group(&mut d, sec, 0.0, 0.0, "Heading on screen one");
         group(&mut d, sec, 0.0, 160.0, "Heading on screen two");
         group(&mut d, track, -900.0, 420.0, "Heading on a parked slide");
+        // A heading whose own opacity is 1 inside a wrapper held at 0 (an
+        // inactive tab) is not painted either (review of #941).
+        let faded = d.add(Some(sec), "div");
+        d.set_styles(faded, &flow);
+        d.set_style(faded, "opacity", "0");
+        d.set_rect(faded, 0.0, 700.0, 800.0, 200.0);
+        group(&mut d, faded, 0.0, 720.0, "Heading in a faded tab");
         let f = check_heading_rhythm_dom(&d);
         let details: Vec<&str> = f.iter().map(|x| x.finding.detail.as_str()).collect();
         assert_eq!(details.len(), 2, "{details:?}");
         assert!(details.iter().all(|x| x.ends_with("(2 headings on page)")), "{details:?}");
-        assert!(!details.iter().any(|x| x.contains("parked")), "{details:?}");
+        assert!(!details.iter().any(|x| x.contains("parked") || x.contains("faded")), "{details:?}");
     }
 
     /// A `display: contents` wrapper whose first child is a spacer: the
@@ -4600,6 +4613,21 @@ mod tests {
         d.set_rect(img, 0.0, 0.0, 0.0, 0.0);
         let m = measure_hidden_text_dom(&d);
         assert_eq!((m.total_chars, m.hidden_chars, m.unstarted_slider_chars), (100.0, 0.0, 40.0), "unstarted");
+        // Nor does a 40px arrow icon beside slides that are all hidden.
+        d.set_rect(carousel, 0.0, 0.0, 640.0, 120.0);
+        let arrow = hidden_box(&mut d, carousel, "svg", &[], "");
+        mark_body_descendants(&mut d);
+        d.set_rect(arrow, 600.0, 40.0, 40.0, 40.0);
+        let m = measure_hidden_text_dom(&d);
+        assert_eq!(m.unstarted_slider_chars, 40.0, "an arrow");
+        // Nor a backdrop on the slider's own box.
+        d.set_style(carousel, "backgroundImage", "url(\"hero.jpg\")");
+        let m = measure_hidden_text_dom(&d);
+        assert_eq!(m.unstarted_slider_chars, 40.0, "the slider's backdrop");
+        // A slide's picture across the track does.
+        d.set_rect(img, 0.0, 0.0, 640.0, 120.0);
+        let m = measure_hidden_text_dom(&d);
+        assert_eq!(m.unstarted_slider_chars, 0.0, "a slide's picture");
     }
 
     #[test]
