@@ -2083,13 +2083,23 @@ fn slider_class(dom: &dyn Dom, el: ElId) -> bool {
 /// (inclusive) is `display: none`, `aria-hidden="true"` or at opacity 0.02 or
 /// less.
 fn text_shows_within(dom: &dyn Dom, el: ElId, upto: ElId) -> bool {
+    shows_within(dom, el, upto, true)
+}
+
+/// [`text_shows_within`] for a picture: `aria-hidden` hides nothing from
+/// sight, and a decorative slide image often carries it.
+fn picture_shows_within(dom: &dyn Dom, el: ElId, upto: ElId) -> bool {
+    shows_within(dom, el, upto, false)
+}
+
+fn shows_within(dom: &dyn Dom, el: ElId, upto: ElId, aria_hides: bool) -> bool {
     if HIDDEN_VIS_RE.is_match(&dom.style(el, "visibility")) {
         return false;
     }
     let mut cur = Some(el);
     while let Some(e) = cur {
         if dom.style(e, "display") == "none"
-            || dom.attr(e, "aria-hidden").as_deref() == Some("true")
+            || (aria_hides && dom.attr(e, "aria-hidden").as_deref() == Some("true"))
             || pf0(&dom.style(e, "opacity")) <= 0.02
         {
             return false;
@@ -2135,8 +2145,8 @@ fn unstarted_slider(dom: &dyn Dom, el: ElId, verdicts: &mut std::collections::Ha
                 && (SLIDER_MEDIA_TAGS.contains(&tag_lower(dom, e).as_str())
                     || js::to_lower_case(&dom.style(e, "backgroundImage")).contains("url("))
         };
-        (dom.direct_text_nodes(e).iter().any(|t| !js::trim(&collapse_ws(t)).is_empty()) || pictured())
-            && text_shows_within(dom, e, slider)
+        (dom.direct_text_nodes(e).iter().any(|t| !js::trim(&collapse_ws(t)).is_empty()) && text_shows_within(dom, e, slider))
+            || (pictured() && picture_shows_within(dom, e, slider))
     };
     let started =
         shows(slider) || dom.query_all(Some(slider), "*").unwrap_or_default().into_iter().any(shows);
@@ -2275,8 +2285,8 @@ fn closed_controlled_ids(dom: &dyn Dom) -> std::collections::HashSet<String> {
 ///   and wholly left or right of the viewport.
 ///
 /// A tab panel (by role or by a tab class) that its tab marks selected
-/// ([`tab_panel_marked_open`]) is none of these: it is the panel a visitor
-/// was meant to see.
+/// ([`tab_panel_marked_open`]) is not closed by its own role or class: it is
+/// the panel a visitor was meant to see. The other tests still apply.
 ///
 /// A box none of these describe is base behaviour: its text counts as hidden.
 fn closed_container(dom: &dyn Dom, el: ElId, closed_ids: &std::collections::HashSet<String>) -> bool {
@@ -2288,13 +2298,13 @@ fn closed_container(dom: &dyn Dom, el: ElId, closed_ids: &std::collections::Hash
     // whether the role or a class (`tab-pane`) names it a panel.
     let tab_like = own_role == "tabpanel"
         || class.split_whitespace().any(|t| class_words(t).iter().any(|w| matches!(w.as_str(), "tab" | "tabs" | "tabpanel" | "tabpane")));
-    if tab_like && tab_panel_marked_open(dom, el) {
-        return false;
-    }
-    if CLOSED_PANEL_ROLES.contains(&own_role.as_str()) {
+    // Only the panel's own role and class exemptions yield to that: an
+    // inert or collapsed wrapper around it still closes it.
+    let selected = tab_like && tab_panel_marked_open(dom, el);
+    if !selected && CLOSED_PANEL_ROLES.contains(&own_role.as_str()) {
         return true;
     }
-    if class.split_whitespace().any(closed_container_class) {
+    if !selected && class.split_whitespace().any(closed_container_class) {
         return true;
     }
     let collapsed = |e: ElId| {
@@ -4626,6 +4636,24 @@ mod tests {
             mark_body_descendants(&mut d);
             let m = measure_hidden_text_dom(&d);
             assert_eq!((m.total_chars, m.hidden_chars), (145.0, 40.0), "labelledby: {by_labelledby}");
+            // An inert wrapper still closes the selected panel (review of
+            // #968): only the panel's own role and class yield.
+            let wrap = hidden_box(&mut d, body, "div", &[], "");
+            d.set_attr(wrap, "inert", "");
+            // The trigger now names a panel inside the wrapper; the first
+            // pane, named by nothing, is an unselected panel again.
+            d.set_attr(pane, "id", "panel-gone");
+            let inner = hidden_box(&mut d, wrap, "div", VIS_HIDDEN, &text("i", 40));
+            d.set_attr(inner, "role", "tabpanel");
+            d.set_attr(inner, "class", "tab-pane");
+            d.set_attr(inner, "id", "panel-plans");
+            if by_labelledby {
+                d.set_attr(pane, "aria-labelledby", "");
+                d.set_attr(inner, "aria-labelledby", "tab-plans");
+            }
+            mark_body_descendants(&mut d);
+            let m = measure_hidden_text_dom(&d);
+            assert_eq!((m.total_chars, m.hidden_chars), (105.0, 0.0), "inert, labelledby: {by_labelledby}");
         }
     }
 
@@ -4664,10 +4692,14 @@ mod tests {
         d.set_style(carousel, "backgroundImage", "url(\"hero.jpg\")");
         let m = measure_hidden_text_dom(&d);
         assert_eq!(m.unstarted_slider_chars, 40.0, "the slider's backdrop");
-        // A slide's picture across the track does.
+        // A slide's picture across the track does, decorative or not
+        // (review of #968: `aria-hidden` hides nothing from sight).
         d.set_rect(img, 0.0, 0.0, 640.0, 120.0);
         let m = measure_hidden_text_dom(&d);
         assert_eq!(m.unstarted_slider_chars, 0.0, "a slide's picture");
+        d.set_attr(img, "aria-hidden", "true");
+        let m = measure_hidden_text_dom(&d);
+        assert_eq!(m.unstarted_slider_chars, 0.0, "an aria-hidden slide picture");
     }
 
     #[test]
