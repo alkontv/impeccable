@@ -145,6 +145,39 @@ fn pseudo_class_states_inside_shadow_trees_are_recorded() {
     browser.close();
 }
 
+/// The in-page probe the live overlay's rule core reads the page through.
+const PROBE_JS: &str = include_str!("../../../browser-bundle/10-probe.js");
+
+const SHADOW_DECK_PAGE: &str = r#"<!doctype html><html><body>
+<deck-carousel id="deck"></deck-carousel>
+<div id="plain"><p>Light</p></div>
+<script>
+  const root = document.getElementById('deck').attachShadow({ mode: 'open' });
+  root.innerHTML = '<style>.track{display:flex}</style><div class="track"><h3>Slide one</h3></div>';
+  document.getElementById('plain').attachShadow({ mode: 'closed' }).innerHTML = '<p>Closed</p>';
+</script>
+</body></html>"#;
+
+/// review of #948: the live page's probe lists the top-level elements of an
+/// open shadow tree, so heading-rhythm does not read a shadow-DOM carousel
+/// as an empty spacer in live and extension scans. A closed tree lists none.
+#[test]
+fn the_page_probe_lists_open_shadow_children() {
+    let Some(mut browser) = browser() else { return };
+    let port = serve(SHADOW_DECK_PAGE);
+    let mut page = browser.new_page().unwrap();
+    page.goto(&format!("http://127.0.0.1:{port}/"), "load", Duration::from_secs(15))
+        .unwrap();
+    let script = format!(
+        "(() => {{ {PROBE_JS}\n const kids = id => __impeccableDom.shadow_children(__intern(document.getElementById(id))).map(h => __el(h).tagName); return {{ deck: kids('deck'), plain: kids('plain') }}; }})()"
+    );
+    let out = page.evaluate_value(&script).unwrap();
+    assert_eq!(out["deck"], serde_json::json!(["STYLE", "DIV"]), "{out}");
+    assert_eq!(out["plain"], serde_json::json!([]), "{out}");
+    page.close();
+    browser.close();
+}
+
 const SHADOW_SHELL_PAGE: &str = r#"<!doctype html><html><head><style>
 html, body { margin: 0; height: 100%; overflow: hidden; }
 app-shell { display: block; height: 100%; }
