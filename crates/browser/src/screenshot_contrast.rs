@@ -248,7 +248,46 @@ pub fn capture_visual_contrast_candidate(
     candidate: &Value,
     viewport_width: f64,
 ) -> CdpResult<Option<RawFinding>> {
-    Ok(measure_visual_contrast_candidate(page, candidate, viewport_width)?.finding)
+    let origin_x = scroll_origin_x(page);
+    Ok(measure_visual_contrast_candidate(page, candidate, viewport_width, origin_x)?.finding)
+}
+
+/// The furthest left the document scrolls, in document coordinates: 0, or
+/// negative on a page that scrolls from the right (a right-to-left page wider
+/// than the viewport keeps its overflow at negative x). A beyond-viewport
+/// clip's x 0 is that edge, so a candidate's document x moves right by the
+/// overflow's width. Asked the way the full-page screenshot asks it
+/// (`crate::fullpage`), by scrolling there and straight back in one task.
+pub fn scroll_origin_x(page: &mut Page<'_>) -> f64 {
+    page.evaluate_value(SCROLL_ORIGIN_JS)
+        .ok()
+        .and_then(|v| v.as_f64())
+        .filter(|x| x.is_finite())
+        .map_or(0.0, |x| x.min(0.0))
+}
+
+const SCROLL_ORIGIN_JS: &str = r#"(() => {
+  const se = document.scrollingElement || document.documentElement;
+  if (!se || se.scrollWidth <= se.clientWidth + 1) return 0;
+  const sx = window.scrollX;
+  const sy = window.scrollY;
+  window.scrollTo({ left: -se.scrollWidth, top: sy, behavior: 'instant' });
+  const origin = Math.min(0, window.scrollX);
+  if (window.scrollX !== sx) window.scrollTo({ left: sx, top: sy, behavior: 'instant' });
+  return origin;
+})()"#;
+
+/// A candidate's document clip as a `Page.captureScreenshot` clip, whose x 0
+/// is the left edge of what the document scrolls ([`scroll_origin_x`]).
+fn capture_clip(clip: Option<&Value>, origin_x: f64) -> Option<Value> {
+    let mut clip = clip?.clone();
+    if origin_x < 0.0 {
+        if let Some(obj) = clip.as_object_mut() {
+            let x = num(obj.get("x"));
+            obj.insert("x".into(), json!(x - origin_x));
+        }
+    }
+    Some(clip)
 }
 
 /// What the pixel pass made of one candidate: its finding, if the text
@@ -265,6 +304,7 @@ pub fn measure_visual_contrast_candidate(
     page: &mut Page<'_>,
     candidate: &Value,
     viewport_width: f64,
+    origin_x: f64,
 ) -> CdpResult<PixelMeasure> {
     let reasons: Vec<String> = candidate
         .get("reasons")
@@ -276,14 +316,14 @@ pub fn measure_visual_contrast_candidate(
     if visual::pixel_contrast_blocked(&reasons).is_some() {
         return Ok(PixelMeasure::default());
     }
-    let Some(clip) = sanitize_screenshot_clip(candidate.get("clip"), Some(viewport_width)) else {
+    let Some(clip) = sanitize_screenshot_clip(capture_clip(candidate.get("clip"), origin_x).as_ref(), Some(viewport_width)) else {
         return Ok(PixelMeasure::default());
     };
     // A candidate past the document's content box (text inside an element the
     // page scrolls instead of its document) paints nothing in a beyond-viewport
     // capture, so both shots would read blank. Scroll it into view, read its
     // pixels there, and put the scroll back.
-    let brought = bring_into_view(page, candidate, &clip, viewport_width);
+    let brought = bring_into_view(page, candidate, &clip, viewport_width, origin_x);
     let (candidate, clip) = match &brought {
         Some((moved, moved_clip)) => (moved, *moved_clip),
         None => (candidate, clip),
@@ -357,6 +397,7 @@ fn bring_into_view(
     candidate: &Value,
     clip: &Clip,
     viewport_width: f64,
+    origin_x: f64,
 ) -> Option<(Value, Clip)> {
     let content = page.content_size().ok()?;
     if !clip_beyond_content(clip, content) {
@@ -379,14 +420,14 @@ fn bring_into_view(
     let n = |key: &str| v.get(key).and_then(Value::as_f64).filter(|f| f.is_finite());
     let live = match (n("x"), n("y"), n("width"), n("height")) {
         (Some(x), Some(y), Some(w), Some(h)) => json!({
-            "x": math_max(0.0, (x - 2.0).floor()),
+            "x": (x - 2.0).floor(),
             "y": math_max(0.0, (y - 2.0).floor()),
             "width": math_max(1.0, (w + 4.0).ceil()),
             "height": math_max(1.0, (h + 4.0).ceil()),
         }),
         _ => Value::Null,
     };
-    let Some(moved_clip) = sanitize_screenshot_clip(Some(&live), Some(viewport_width)) else {
+    let Some(moved_clip) = sanitize_screenshot_clip(capture_clip(Some(&live), origin_x).as_ref(), Some(viewport_width)) else {
         let _ = page.evaluate(RESTORE_SCROLL_JS);
         return None;
     };
@@ -635,6 +676,17 @@ mod tests {
         assert_eq!(c.width, 1.0);
         assert!(sanitize_screenshot_clip(None, None).is_none());
         assert!(sanitize_screenshot_clip(Some(&Value::Null), None).is_none());
+    }
+
+    #[test]
+    fn a_right_to_left_overflow_moves_the_clip() {
+        let clip = json!({ "x": -40.0, "y": 300.0, "width": 200.0, "height": 24.0 });
+        // A page that scrolls from the left keeps the document x.
+        assert_eq!(capture_clip(Some(&clip), 0.0), Some(clip.clone()));
+        // 321px of overflow left of the viewport: document x -40 is clip x 281.
+        let c = sanitize_screenshot_clip(capture_clip(Some(&clip), -321.0).as_ref(), Some(390.0)).unwrap();
+        assert_eq!((c.x, c.y), (281.0, 300.0));
+        assert_eq!(capture_clip(None, -321.0), None);
     }
 
     #[test]
