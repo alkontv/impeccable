@@ -2056,6 +2056,9 @@ enum HiddenState {
 const SLIDER_CLASS_WORDS: &[&str] =
     &["slider", "carousel", "swiper", "slick", "splide", "glide", "flickity", "slideshow", "revslider"];
 
+/// The boxes that show a slide's picture, where a slide shows no text.
+const SLIDER_MEDIA_TAGS: &[&str] = &["img", "picture", "video", "canvas", "svg"];
+
 /// How far above a hidden box the slider that holds it is looked for.
 const SLIDER_MAX_DEPTH: usize = 6;
 
@@ -2103,7 +2106,7 @@ fn text_shows_within(dom: &dyn Dom, el: ElId, upto: ElId) -> bool {
 /// r6-t6-hidden-scroll-linked): the box or one of its nearest
 /// [`SLIDER_MAX_DEPTH`] ancestors carries a slider class
 /// ([`SLIDER_CLASS_WORDS`]), and not one element in that slider shows text
-/// ([`text_shows_within`]). A slider that started shows its current slide,
+/// or a picture ([`text_shows_within`]). A slider that started shows its current slide,
 /// so its other slides are not this (they count as before). One that shows
 /// nothing at all is the capture's state (a script that had not run, a
 /// preloader still up), not something to measure the page by.
@@ -2115,8 +2118,18 @@ fn unstarted_slider(dom: &dyn Dom, el: ElId, verdicts: &mut std::collections::Ha
     if let Some(v) = verdicts.get(&slider) {
         return *v;
     }
+    // A slide shows its text, or a picture: an image-only carousel that
+    // started shows its current image while every caption waits hidden.
     let shows = |e: ElId| {
-        dom.direct_text_nodes(e).iter().any(|t| !js::trim(&collapse_ws(t)).is_empty()) && text_shows_within(dom, e, slider)
+        let pictured = || {
+            let r = dom.rect(e);
+            r.width >= 1.0
+                && r.height >= 1.0
+                && (SLIDER_MEDIA_TAGS.contains(&tag_lower(dom, e).as_str())
+                    || js::to_lower_case(&dom.style(e, "backgroundImage")).contains("url("))
+        };
+        (dom.direct_text_nodes(e).iter().any(|t| !js::trim(&collapse_ws(t)).is_empty()) || pictured())
+            && text_shows_within(dom, e, slider)
     };
     let started =
         shows(slider) || dom.query_all(Some(slider), "*").unwrap_or_default().into_iter().any(shows);
@@ -4562,6 +4575,29 @@ mod tests {
     /// or never looked at, still counts. A slider with every slide hidden
     /// leaves both counts and is reported apart; a slider showing its current
     /// slide is a page, and its other slides count as before.
+    #[test]
+    fn an_image_carousel_that_started_counts_its_hidden_captions() {
+        let text = |c: &str, n: usize| c.repeat(n);
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        hidden_box(&mut d, body, "p", &[], &text("v", 100));
+        let carousel = hidden_box(&mut d, body, "div", &[], "");
+        d.set_attr(carousel, "class", "carousel");
+        let current = hidden_box(&mut d, carousel, "div", &[], "");
+        let img = hidden_box(&mut d, current, "img", &[], "");
+        hidden_box(&mut d, current, "p", VIS_HIDDEN, &text("a", 20));
+        let waiting = hidden_box(&mut d, carousel, "div", OPACITY_0, "");
+        hidden_box(&mut d, waiting, "p", VIS_HIDDEN, &text("b", 20));
+        mark_body_descendants(&mut d);
+        d.set_rect(img, 0.0, 0.0, 640.0, 120.0);
+        let m = measure_hidden_text_dom(&d);
+        assert_eq!((m.total_chars, m.hidden_chars, m.unstarted_slider_chars), (140.0, 40.0, 0.0), "started");
+        // With no picture laid out, nothing shows: it never started.
+        d.set_rect(img, 0.0, 0.0, 0.0, 0.0);
+        let m = measure_hidden_text_dom(&d);
+        assert_eq!((m.total_chars, m.hidden_chars, m.unstarted_slider_chars), (100.0, 0.0, 40.0), "unstarted");
+    }
+
     #[test]
     fn hidden_text_measure_probes_scroll_linked_reveals_and_sets_aside_unstarted_sliders() {
         let text = |c: &str, n: usize| c.repeat(n);
