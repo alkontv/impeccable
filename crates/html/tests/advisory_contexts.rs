@@ -136,7 +136,7 @@ fn a_custom_checkbox_rows_label_is_not_fine_print() {
 #[test]
 fn text_in_a_framed_demo_is_advisory_under_three_rules() {
     let f = scan_fixture("mockup-structure.html");
-    for label in ["847 results", "coldtea.ai"] {
+    for label in ["847 results", "coldtea.ai", "Metadata mapping", "mail.google.com"] {
         assert_eq!(severities(&f, "undersized-ui-text", label), ["advisory"], "{label}");
     }
     for label in [
@@ -148,6 +148,10 @@ fn text_in_a_framed_demo_is_advisory_under_three_rules() {
         "Starter",
         "Jane Doe",
         "Back face",
+        "Best tool we bought",
+        "Nearly level",
+        "Synced",
+        "Paid",
     ] {
         assert_eq!(severities(&f, "undersized-ui-text", label), ["warning"], "{label}");
     }
@@ -199,12 +203,13 @@ fn a_class_marked_mockup_reports_small_text_as_advisory() {
 #[test]
 fn nested_cards_in_a_mockup_are_advisory() {
     let f = scan_fixture("nested-cards-mockups.html");
-    // Four inner cards in mockups (in a three-dot window, in a tilted frame,
-    // a three-dot window inside a card, a `role="img"` subtree); three
-    // paseo.sh cards in a plain panel, one under a two-dot bar and one under
-    // a mockup class keep failing.
-    assert_eq!(count(&f, "nested-cards", true), 4, "{f:#?}");
-    assert_eq!(count(&f, "nested-cards", false), 5, "{f:#?}");
+    // Five inner cards in mockups (in a three-dot window, in a tilted frame,
+    // a three-dot window inside a card, a window under a scaled wrapper
+    // inside a card, a `role="img"` subtree); three paseo.sh cards in a
+    // plain panel, one under a two-dot bar, a card fanned at full size and
+    // one under a mockup class keep failing.
+    assert_eq!(count(&f, "nested-cards", true), 5, "{f:#?}");
+    assert_eq!(count(&f, "nested-cards", false), 6, "{f:#?}");
 }
 
 #[test]
