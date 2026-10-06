@@ -182,20 +182,21 @@ fn gradient_paints_only(dom: &dyn Dom, node: ElId, fill: &str) -> bool {
         })
 }
 
-/// Whether a box laid under `el`'s rect paints a picture there: an `img`,
-/// `video` or `canvas`, itself or inside it, whose own rect covers `r`. The
-/// picture's rect, not its wrapper's: an inline `<picture>` reports the line
-/// box its image sits on, not the image.
+/// Whether a box laid under `el`'s rect paints a photo there: an `img` or
+/// `video`, itself or inside it, whose own rect covers `r`. The photo's rect,
+/// not its wrapper's: an inline `<picture>` reports the line box its image
+/// sits on, not the image. A `canvas` is drawn content (a map, a chart), and
+/// a panel laid on it keeps its edge.
 fn raster_covers(dom: &dyn Dom, layer: ElId, r: &Rect) -> bool {
     let covers = |n: ElId| {
         let nr = dom.rect(n);
         nr.left <= r.left + 1.0 && nr.right >= r.right - 1.0 && nr.top <= r.top + 1.0 && nr.bottom >= r.bottom - 1.0
     };
-    let is_raster = |n: ElId| matches!(tag_lower(dom, n).as_str(), "img" | "video" | "canvas");
+    let is_raster = |n: ElId| matches!(tag_lower(dom, n).as_str(), "img" | "video");
     if is_raster(layer) {
         return covers(layer);
     }
-    dom.query_all(Some(layer), "img, video, canvas")
+    dom.query_all(Some(layer), "img, video")
         .unwrap_or_default()
         .into_iter()
         .any(|n| dom.style(n, "display") != "none" && dom.style(n, "visibility") != "hidden" && covers(n))
@@ -231,7 +232,7 @@ fn backdrop_layer_matches(dom: &dyn Dom, el: ElId) -> bool {
             if covers && !css_color_is_transparent(Some(&fill)) {
                 return colors_nearly_match(Some(&bg), Some(&fill));
             }
-            // A picture laid under the fill (telekom.de's magenta card on a
+            // A photo laid under the fill (telekom.de's magenta card on a
             // magenta photo) is what the reader sees around it, and its
             // colours are not read here: the edge the fill draws against
             // the page behind the photo is not one a reader sees.
@@ -3624,6 +3625,12 @@ mod tests {
         let (d, card) = page(true);
         assert!(cramped(&d, card).is_empty(), "{:?}", cramped(&d, card));
         let (d, card) = page(false);
+        assert_eq!(cramped(&d, card), vec!["<div> \"teaser\": children flush against bg on top/left (no inset)"]);
+        // Drawn content is not a photo: a panel on a map canvas keeps its
+        // edge.
+        let (mut d, card) = page(true);
+        let img = d.query_all(None, "img").unwrap()[0];
+        d.els[img as usize].tag = "CANVAS".to_string();
         assert_eq!(cramped(&d, card), vec!["<div> \"teaser\": children flush against bg on top/left (no inset)"]);
     }
 
