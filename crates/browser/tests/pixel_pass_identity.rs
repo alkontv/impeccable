@@ -77,7 +77,8 @@ fn a_repeated_id_does_not_send_the_pixel_pass_to_a_collapsed_copy() {
 /// that overflow. White text on pale vector artwork only the pixel pass can
 /// answer, once inside the first viewport at the right and once in the
 /// overflow at negative x; each clip has to be moved by the scroll origin or
-/// both shots read somewhere else.
+/// both shots read somewhere else. The overflow copy is short and set at the
+/// right of its padded box, so only its text's own x finds it.
 const RTL_VECTOR_PAGE: &str = r##"<!DOCTYPE html>
 <html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>Right-to-left vector copy</title>
 <style>
@@ -101,7 +102,7 @@ const RTL_VECTOR_PAGE: &str = r##"<!DOCTYPE html>
   <div class="overflow-row">
     <div class="vector-panel">
       <svg viewBox="0 0 420 96" aria-hidden="true"><rect width="420" height="96" fill="#f5f2ea"/></svg>
-      <p id="rtl-overflow-copy">White text on pale artwork past the left edge.</p>
+      <p id="rtl-overflow-copy">Pale copy.</p>
     </div>
   </div>
 </body></html>"##;

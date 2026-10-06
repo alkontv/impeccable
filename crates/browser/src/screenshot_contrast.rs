@@ -280,7 +280,10 @@ const SCROLL_ORIGIN_JS: &str = r#"(() => {
 /// The candidate's clip in document coordinates. The collector clamps a
 /// clip's x at 0, which on a page that scrolls from the right cuts every
 /// candidate in the overflow left of the viewport to the same x: there the
-/// element's box is read again, live, for its own x.
+/// box the collector measured is read again, live, for its own x. That box
+/// is the union of the element's own text lines (the capture's direct text
+/// rect), or its border box when it has none, so x, width and height still
+/// describe one box.
 fn document_clip(page: &mut Page<'_>, candidate: &Value, origin_x: f64) -> Option<Value> {
     let clip = candidate.get("clip")?;
     if !(origin_x < 0.0) || !clip.is_object() || num(clip.get("x")) > 0.0 {
@@ -289,7 +292,7 @@ fn document_clip(page: &mut Page<'_>, candidate: &Value, origin_x: f64) -> Optio
     let selector = candidate.get("selector").and_then(Value::as_str).filter(|s| !s.is_empty());
     let left = selector.and_then(|selector| {
         page.evaluate_value(&format!(
-            "(el => el ? el.getBoundingClientRect().left + window.scrollX : null)(({PICK_CANDIDATE_JS})({}, {}))",
+            "({LIVE_TEXT_LEFT_JS})(({PICK_CANDIDATE_JS})({}, {}))",
             json!(selector),
             candidate.get("match").cloned().unwrap_or(Value::Null)
         ))
@@ -303,6 +306,22 @@ fn document_clip(page: &mut Page<'_>, candidate: &Value, origin_x: f64) -> Optio
     }
     Some(clip)
 }
+
+/// `el => x`: the document x of the left edge of an element's own text lines
+/// (its direct text nodes, as the capture's direct text rect reads them), or
+/// of its border box when it has none; `null` without an element.
+const LIVE_TEXT_LEFT_JS: &str = r#"(el => {
+  if (!el) return null;
+  let left = Infinity;
+  for (const child of el.childNodes) {
+    if (child.nodeType !== 3 || !(child.textContent || '').trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(child);
+    for (const r of range.getClientRects()) if (r.width >= 1 && r.height >= 1) left = Math.min(left, r.left);
+  }
+  if (!Number.isFinite(left)) left = el.getBoundingClientRect().left;
+  return left + window.scrollX;
+})"#;
 
 /// A candidate's document clip as a `Page.captureScreenshot` clip, whose x 0
 /// is the left edge of what the document scrolls ([`scroll_origin_x`]).
