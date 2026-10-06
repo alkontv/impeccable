@@ -2696,8 +2696,11 @@ fn gradient_layer_covers_box(dom: &dyn Dom, node: ElId, layers: &[String], index
     if matches!(value("backgroundRepeat").as_str(), "" | "repeat" | "repeat repeat") {
         return true;
     }
-    matches!(value("backgroundSize").as_str(), "" | "auto" | "auto auto" | "cover" | "100% 100%")
-        && split_ws(&value("backgroundPosition")).iter().all(|t| t.ends_with('%') || matches!(&**t, "0px" | "left" | "top" | "center" | "right" | "bottom"))
+    // A gradient has no size of its own, so `auto` (and `contain`) fill the box.
+    let size = value("backgroundSize");
+    let fills = matches!(size.as_str(), "cover" | "contain") || split_ws(&size).iter().all(|t| matches!(&**t, "" | "auto" | "100%"));
+    fills
+        && split_ws(&value("backgroundPosition")).iter().all(|t| t.ends_with('%') || matches!(&**t, "" | "0px" | "left" | "top" | "center" | "right" | "bottom"))
 }
 
 /// JS: index.mjs#sampleCssBackground — every decision except the image
@@ -4014,6 +4017,9 @@ mod tests {
         assert!(unread(&d));
         // Tiled, the same gradient paints the whole box.
         d.set_style(sec, "backgroundRepeat", "repeat");
+        assert_eq!(color(&d), Some(rgba(0.0, 0.0, 0.0, 1.0)));
+        // So does an untiled one whose `auto` side fills the box.
+        d.set_styles(sec, &[("backgroundSize", "100% auto, auto"), ("backgroundRepeat", "no-repeat, repeat")]);
         assert_eq!(color(&d), Some(rgba(0.0, 0.0, 0.0, 1.0)));
     }
 
