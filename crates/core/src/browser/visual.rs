@@ -3033,11 +3033,16 @@ pub fn alpha_composite(sample: Value, under: &Value) -> Value {
         let base = rgba_from_value(under.get("color"));
         let blended = blend_rgba(top.as_ref(), base.as_ref());
         let method = str_or_empty(sample.get("method"));
-        return json!({
+        let mut out = json!({
             "status": "sampled",
             "color": rgba_value(blended.as_ref()),
             "method": format!("{method}+alpha"),
         });
+        // A stacked gradient's range (`best`) is veiled the same way.
+        if let Some(best) = rgba_from_value(under.get("best")) {
+            out["best"] = rgba_value(blend_rgba(top.as_ref(), Some(&best)).as_ref());
+        }
+        return out;
     }
     sample
 }
@@ -3234,12 +3239,15 @@ pub fn finish_analysis(candidate: &Value, text_color: &Rgba, samples: &[Value], 
         let ratio = ratio_on(&color.unwrap());
         // A stacked gradient reports the range of colors it can show. When the
         // two ends disagree on the verdict, the answer depends on where the
-        // text sits, and only pixels can say.
-        if ratio < threshold && rgba_from_value(sample.get("best")).is_some_and(|best| ratio_on(&best) >= threshold) {
+        // text sits, and only pixels can say. A veil over the range can swap
+        // which end is worse, so neither is assumed to be.
+        let other = rgba_from_value(sample.get("best")).map(|best| ratio_on(&best));
+        if other.is_some_and(|other| (ratio < threshold) != (other < threshold)) {
             straddles = true;
             unresolved_reasons.push(STACKED_GRADIENTS.to_string());
             continue;
         }
+        let ratio = other.map_or(ratio, |other| math_min(ratio, other));
         ratios.push(ratio);
         let method = str_or_empty(sample.get("method"));
         if !method.is_empty() && !methods.contains(&method) {
@@ -3594,6 +3602,16 @@ mod tests {
         let straddles = finish_analysis(&candidate, &tc, &range(0.0), 3);
         assert_eq!((&straddles["status"], &straddles["reason"]), (&json!("unresolved"), &json!(STACKED_GRADIENTS)));
         assert_eq!(finish_analysis(&candidate, &tc, &range(250.0), 3)["status"], "fail");
+        // A veil can swap the ends: a passing `color` beside a failing `best` straddles too.
+        let swapped: Vec<Value> = (0..3)
+            .map(|_| json!({ "status": "sampled", "color": { "r": 0, "g": 0, "b": 0, "a": 1 }, "best": { "r": 255, "g": 255, "b": 255, "a": 1 }, "method": "analytic-gradient" }))
+            .collect();
+        assert_eq!(finish_analysis(&candidate, &tc, &swapped, 3)["reason"], json!(STACKED_GRADIENTS));
+        // A translucent surface above the range veils both ends.
+        let veil = json!({ "status": "sampled", "color": { "r": 0, "g": 0, "b": 0, "a": 0.5 }, "method": "solid-background" });
+        let veiled = composite_stack(&[veil], &range(0.0)[0]);
+        assert_eq!(rgba_from_value(veiled.get("color")), Some(rgba(128.0, 128.0, 128.0, 1.0)));
+        assert_eq!(rgba_from_value(veiled.get("best")), Some(rgba(0.0, 0.0, 0.0, 1.0)));
         // One such point beside readable ones: they may fail the text, never pass it.
         let beside = |r: f64| -> Vec<Value> {
             let mut v: Vec<Value> = (0..3)
