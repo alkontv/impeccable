@@ -2063,8 +2063,9 @@ const SLIDER_MEDIA_TAGS: &[&str] = &["img", "picture", "video", "canvas", "svg"]
 const SLIDER_MAX_DEPTH: usize = 6;
 
 /// Class words that name one slide of a slider (`swiper-slide`,
-/// `carousel-item`, `splide__slide`): such a box is a slide, not the slider.
-const SLIDE_CLASS_WORDS: &[&str] = &["slide", "item", "cell", "card", "pane"];
+/// `carousel-item`, `splide__slide`) or a part of one (Bootstrap's
+/// `carousel-caption`): such a box is in a slider, not the slider.
+const SLIDE_CLASS_WORDS: &[&str] = &["slide", "item", "cell", "card", "pane", "caption"];
 
 /// Whether `el` is a slider box: a class token names a slider
 /// ([`SLIDER_CLASS_WORDS`]) and not one of its slides
@@ -4585,7 +4586,10 @@ mod tests {
         d.set_attr(carousel, "class", "carousel");
         let current = hidden_box(&mut d, carousel, "div", &[], "");
         let img = hidden_box(&mut d, current, "img", &[], "");
-        hidden_box(&mut d, current, "p", VIS_HIDDEN, &text("a", 20));
+        // Bootstrap's caption class names the carousel, and the caption is
+        // part of a slide, not a slider of its own.
+        let caption = hidden_box(&mut d, current, "p", VIS_HIDDEN, &text("a", 20));
+        d.set_attr(caption, "class", "carousel-caption");
         let waiting = hidden_box(&mut d, carousel, "div", OPACITY_0, "");
         hidden_box(&mut d, waiting, "p", VIS_HIDDEN, &text("b", 20));
         mark_body_descendants(&mut d);
