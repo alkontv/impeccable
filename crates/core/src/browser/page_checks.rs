@@ -2368,7 +2368,7 @@ fn slid_off_drawer(dom: &dyn Dom, el: ElId) -> bool {
         return false;
     }
     let transform = js::trim(&dom.style(el, "transform")).replace(' ', "");
-    if transform.is_empty() || transform == "none" || transform == "matrix(1,0,0,1,0,0)" {
+    if transform.is_empty() || transform == "none" || super::element_checks::is_identity_matrix(&transform) {
         return false;
     }
     if !super::painted::declares_transition_of(dom, el, "transform") {
@@ -6215,6 +6215,7 @@ mod tests {
         for (prop, value) in [
             ("transitionDuration", "0s"),
             ("transform", "none"),
+            ("transform", "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)"),
             ("position", "static"),
         ] {
             d.set_style(panel, prop, value);
@@ -6248,6 +6249,7 @@ mod tests {
                 crate::browser::dom::KeyframeFrame { decls: vec![("opacity".into(), "1".into())] },
             ],
         );
+        d.keyframe_keys.insert("sent".to_string(), vec!["0%, 25%".to_string(), "27%, 100%".to_string()]);
         hidden_box(&mut d, body, "p", &[], "visible text");
         let bubble = hidden_box(
             &mut d,
@@ -6261,6 +6263,7 @@ mod tests {
                 ("animationDirection", "normal"),
                 ("animationDuration", "10s"),
                 ("animationDelay", "0s"),
+                ("animationPlayState", "running"),
             ],
             "ok, moving to 10am",
         );

@@ -1087,13 +1087,14 @@ struct AnimationEntry {
     duration: String,
     delay: String,
     timeline: String,
+    play_state: String,
 }
 
 /// The entries of the element's `animation-*` lists, one per name other
 /// than `none`. A list the capture did not record (a recording made before
 /// it read `animation-fill-mode`, `animation-direction`,
-/// `animation-duration` and `animation-delay`) reads empty, and every test
-/// on it answers no.
+/// `animation-duration`, `animation-delay` and `animation-play-state`) reads
+/// empty, and every test that needs it answers no.
 fn animation_entries(dom: &dyn Dom, el: ElId) -> Vec<AnimationEntry> {
     let names = dom.style(el, "animationName");
     if js::trim(&names).is_empty() || js::trim(&names) == "none" {
@@ -1111,6 +1112,7 @@ fn animation_entries(dom: &dyn Dom, el: ElId) -> Vec<AnimationEntry> {
     };
     let (iterations, fill, direction) = (list("animationIterationCount"), list("animationFillMode"), list("animationDirection"));
     let (duration, delay, timeline) = (list("animationDuration"), list("animationDelay"), list("animationTimeline"));
+    let play_state = list("animationPlayState");
     names
         .split(',')
         .map(js::trim)
@@ -1124,8 +1126,27 @@ fn animation_entries(dom: &dyn Dom, el: ElId) -> Vec<AnimationEntry> {
             duration: at(&duration, i),
             delay: at(&delay, i),
             timeline: at(&timeline, i),
+            play_state: at(&play_state, i),
         })
         .collect()
+}
+
+/// The one entry of the element's animations whose keyframes set `opacity`,
+/// with every entry: `None` where none does or more than one does, since
+/// which of several wins depends on their order and their composition, and
+/// where a keyframe set cannot be read.
+fn sole_opacity_entry(dom: &dyn Dom, el: ElId) -> Option<AnimationEntry> {
+    let mut found: Option<AnimationEntry> = None;
+    for entry in animation_entries(dom, el) {
+        let frames = dom.keyframes(&entry.name)?;
+        if frames.iter().any(|f| f.decls.iter().any(|(p, _)| p == "opacity")) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(entry);
+        }
+    }
+    found
 }
 
 /// The opacity a keyframe sets, `None` where it sets none or it does not
@@ -1146,17 +1167,51 @@ fn frame_opacity(frame: &super::dom::KeyframeFrame) -> Option<f64> {
         .filter(|v| v.is_finite())
 }
 
+/// Whether a keyframe selector (`"0%, 35%"`, `"from"`, `"to"`) names the
+/// offset `at` (0 or 1).
+fn key_names_offset(key: &str, at: f64) -> bool {
+    key.split(',').any(|k| {
+        let k = js::to_lower_case(js::trim(k));
+        let offset = match k.as_str() {
+            "from" => 0.0,
+            "to" => 1.0,
+            _ => match k.strip_suffix('%') {
+                Some(pct) => js::parse_float(pct) / 100.0,
+                None => f64::NAN,
+            },
+        };
+        (offset - at).abs() < 1e-9
+    })
+}
+
+/// The opacity the keyframes of `name` set at offset `at` (0 or 1): the last
+/// frame whose selector names that offset and sets `opacity`. `None` where
+/// the capture recorded no selectors, or no frame sets opacity there (the
+/// box then takes its own opacity, which the capture does not know).
+fn opacity_at_offset(dom: &dyn Dom, name: &str, at: f64) -> Option<f64> {
+    let frames = dom.keyframes(name)?;
+    let keys = dom.keyframe_keys(name)?;
+    if keys.len() != frames.len() {
+        return None;
+    }
+    frames
+        .iter()
+        .zip(keys.iter())
+        .filter(|(_, key)| key_names_offset(key, at))
+        .filter_map(|(frame, _)| frame_opacity(frame))
+        .last()
+}
+
 /// The opacity a finite animation holds once it has played, where it holds
-/// one: `animation-fill-mode` is `forwards` or `both`, the iteration count is
-/// a whole number, the run (delay plus every iteration) ends within
-/// [`ANIMATION_END_MAX_SECONDS`] on the document timeline, and the keyframe
-/// the direction ends on sets `opacity`. Keyframes are read in the order the
-/// stylesheet lists them, the last as the end (`normal`) and the first as
-/// the start, which is how `@keyframes` are written. `None` for anything
-/// else: an unrecorded list, an infinite or fractional count, a scroll-driven
-/// timeline, a fill mode that hands the box back to its own style.
+/// one: it is running (`animation-play-state`), `animation-fill-mode` is
+/// `forwards` or `both`, the iteration count is a whole number, the run
+/// (delay plus every iteration) ends within [`ANIMATION_END_MAX_SECONDS`] on
+/// the document timeline, and a keyframe at the offset the direction ends on
+/// sets `opacity`. `None` for anything else: an unrecorded list or keyframe
+/// selector, an infinite or fractional count, a scroll-driven timeline, a
+/// fill mode that hands the box back to its own style.
 fn held_end_opacity(dom: &dyn Dom, entry: &AnimationEntry) -> Option<f64> {
-    if !matches!(entry.fill.as_str(), "forwards" | "both") {
+    if entry.play_state != "running" || !matches!(entry.fill.as_str(), "forwards" | "both") {
         return None;
     }
     if !(entry.timeline.is_empty() || entry.timeline == "auto") {
@@ -1178,9 +1233,7 @@ fn held_end_opacity(dom: &dyn Dom, entry: &AnimationEntry) -> Option<f64> {
         "alternate-reverse" => !odd,
         _ => return None,
     };
-    let frames = dom.keyframes(&entry.name)?;
-    let frame = if ends_on_last { frames.last() } else { frames.first() }?;
-    frame_opacity(frame)
+    opacity_at_offset(dom, &entry.name, if ends_on_last { 1.0 } else { 0.0 })
 }
 
 /// A CSS `<time>` in seconds, `None` where it does not read.
@@ -1202,52 +1255,57 @@ fn css_time(value: &str) -> Option<f64> {
 /// (`ds-url-old 10s linear forwards`, opacity 1 until 35% and 0 after). A
 /// capture taken in the first seconds reads opacity 1, which is a frame no
 /// visitor is left with. The capture has to have seen an animation moving
-/// the box's `opacity`; a recording made before the capture read the fill
-/// mode, direction, duration and delay answers no ([`held_end_opacity`]).
+/// the box's `opacity`, and the fade has to be the box's only animation that
+/// sets it ([`sole_opacity_entry`]); a recording made before the capture read
+/// the fill mode, direction, duration, delay, play state and keyframe
+/// selectors answers no ([`held_end_opacity`]).
 pub(crate) fn fades_out_for_good(dom: &dyn Dom, el: ElId) -> bool {
     if !opacity_in_motion(dom, el) {
         return false;
     }
-    animation_entries(dom, el)
-        .iter()
-        .any(|entry| held_end_opacity(dom, entry).is_some_and(|o| o <= TRANSPARENT_FLOOR))
+    sole_opacity_entry(dom, el)
+        .and_then(|entry| held_end_opacity(dom, &entry))
+        .is_some_and(|o| o <= TRANSPARENT_FLOOR)
 }
 
-/// Whether an animation running on `el` at capture shows it: a loop whose
-/// keyframes take its `opacity` above the transparent floor, or a one-shot
-/// fade that ends above it and holds that frame. A box caught at 0 in the
-/// first frames of a timed fade-in, or in the off phase of a loop, is
-/// content a visitor reads. Scroll-driven timelines are
-/// [`opacity_held_by_scroll_timeline`]'s; a recording that did not see the
-/// animation running answers no.
+/// Whether the animation that sets `el`'s opacity, running at capture, shows
+/// it: a loop whose keyframes take its `opacity` above the transparent
+/// floor, or a one-shot fade that ends above it and holds that frame. A box
+/// caught at 0 in the first frames of a timed fade-in, or in the off phase
+/// of a loop, is content a visitor reads. Scroll-driven timelines are
+/// [`opacity_held_by_scroll_timeline`]'s; a paused animation, a box with
+/// more than one animation setting opacity, and a recording that did not
+/// see the animation running answer no.
 pub(crate) fn opacity_animation_shows(dom: &dyn Dom, el: ElId) -> bool {
     if !opacity_in_motion(dom, el) {
         return false;
     }
-    animation_entries(dom, el).iter().any(|entry| {
-        if !(entry.timeline.is_empty() || entry.timeline == "auto") {
-            return false;
-        }
-        if entry.iterations == "infinite" {
-            return dom.keyframes(&entry.name).is_some_and(|frames| {
-                frames.iter().filter_map(frame_opacity).any(|o| o > TRANSPARENT_FLOOR)
-            });
-        }
-        held_end_opacity(dom, entry).is_some_and(|o| o > TRANSPARENT_FLOOR)
-    })
+    let Some(entry) = sole_opacity_entry(dom, el) else {
+        return false;
+    };
+    if !(entry.timeline.is_empty() || entry.timeline == "auto") || entry.play_state == "paused" {
+        return false;
+    }
+    if entry.iterations == "infinite" {
+        return dom
+            .keyframes(&entry.name)
+            .is_some_and(|frames| frames.iter().filter_map(frame_opacity).any(|o| o > TRANSPARENT_FLOOR));
+    }
+    held_end_opacity(dom, &entry).is_some_and(|o| o > TRANSPARENT_FLOOR)
 }
 
 /// The opacity at or under which a loop's keyframe makes the box vanish.
 const LOOP_VANISH_OPACITY: f64 = 0.1;
 
 /// Whether a loop running on `el` at capture takes it out of sight every
-/// cycle: an `animation-name` paired with an `infinite` iteration count whose
-/// keyframes set `opacity` at or under [`LOOP_VANISH_OPACITY`], and the
-/// capture saw an animation moving the box's `opacity`. The frame the capture
-/// read and the frame a later screenshot shows are different phases of it. A
-/// loop that only breathes (0.7 to 1), one that moves a transform or a shadow
-/// alone (a marquee, a floating card), a box whose keyframes the capture could
-/// not read, and a recording that did not read running animations answer no.
+/// cycle: the box's only animation setting `opacity` is paired with an
+/// `infinite` iteration count, is not paused, and has a keyframe at or under
+/// [`LOOP_VANISH_OPACITY`], and the capture saw an animation moving the box's
+/// `opacity`. The frame the capture read and the frame a later screenshot
+/// shows are different phases of it. A loop that only breathes (0.7 to 1),
+/// one that moves a transform or a shadow alone (a marquee, a floating
+/// card), a box whose keyframes the capture could not read, and a recording
+/// that did not read running animations answer no.
 pub(crate) fn loops_in_motion(dom: &dyn Dom, el: ElId) -> bool {
     let names = dom.style(el, "animationName");
     if js::trim(&names).is_empty() || js::trim(&names) == "none" {
@@ -1256,8 +1314,9 @@ pub(crate) fn loops_in_motion(dom: &dyn Dom, el: ElId) -> bool {
     if !opacity_in_motion(dom, el) {
         return false;
     }
-    animation_entries(dom, el).iter().any(|entry| {
+    sole_opacity_entry(dom, el).is_some_and(|entry| {
         entry.iterations == "infinite"
+            && entry.play_state != "paused"
             && dom
                 .keyframes(&entry.name)
                 .is_some_and(|frames| frames.iter().filter_map(frame_opacity).any(|o| o <= LOOP_VANISH_OPACITY))
@@ -1757,7 +1816,7 @@ fn stacked_with(dom: &dyn Dom, el: ElId, video_only: bool) -> bool {
 fn holds_layer_over(dom: &dyn Dom, node: ElId, target: &Rect, depth: usize, video_only: bool) -> bool {
     let tag = tag_lower(dom, node);
     let layer = if video_only {
-        tag == "video"
+        tag == "video" && shows_box(dom, node)
     } else {
         MEDIA_TAGS.contains(&tag.as_str()) || dom.style(node, "backgroundImage").contains("url(")
     };
@@ -1769,6 +1828,15 @@ fn holds_layer_over(dom: &dyn Dom, node: ElId, target: &Rect, depth: usize, vide
             .children(node)
             .into_iter()
             .any(|child| holds_layer_over(dom, child, target, depth - 1, video_only))
+}
+
+/// Whether a box is drawn at all: rendered, not `visibility: hidden`, and
+/// above the transparent floor once its ancestors' opacity is applied.
+fn shows_box(dom: &dyn Dom, node: ElId) -> bool {
+    dom.check_visibility(node) != Some(false)
+        && !hides_by_visibility(dom, node)
+        && dom.style(node, "display") != "none"
+        && effective_opacity_dom(dom, node) > TRANSPARENT_FLOOR
 }
 
 /// Whether `layer` overlaps at least half of `target`'s area.
@@ -3516,6 +3584,13 @@ mod tests {
         assert!(page_form_painted(&d, "pulsing-dot", &[host]));
     }
 
+    /// Keyframes with their selectors, as a capture records both.
+    fn set_keyframes(d: &mut FakeDom, name: &str, frames_by_key: &[(&str, &[(&str, &str)])]) {
+        let values: Vec<&[(&str, &str)]> = frames_by_key.iter().map(|(_, decls)| *decls).collect();
+        d.keyframes.insert(name.into(), frames(&values));
+        d.keyframe_keys.insert(name.into(), frames_by_key.iter().map(|(k, _)| k.to_string()).collect());
+    }
+
     fn frames(values: &[&[(&str, &str)]]) -> Vec<crate::browser::dom::KeyframeFrame> {
         values
             .iter()
@@ -3538,6 +3613,7 @@ mod tests {
                 ("animationDuration", "10s"),
                 ("animationDelay", "0s"),
                 ("animationTimeline", "auto"),
+                ("animationPlayState", "running"),
             ],
         );
         d.set_running_animations(el, &["opacity"]);
@@ -3555,8 +3631,8 @@ mod tests {
         d.set_styles(old, &[("fontSize", "10.5px"), ("opacity", "1"), ("position", "absolute")]);
         d.set_rect(old, 40.0, 200.0, 174.0, 20.0);
         d.add_text(old, "mail.google.com");
-        d.keyframes.insert("ds-url-old".into(), frames(&[&[("opacity", "1")], &[("opacity", "0")]]));
-        d.keyframes.insert("ds-url-new".into(), frames(&[&[("opacity", "0")], &[("opacity", "1")]]));
+        set_keyframes(&mut d, "ds-url-old", &[("0%, 35%", &[("opacity", "1")]), ("36%, 100%", &[("opacity", "0")])]);
+        set_keyframes(&mut d, "ds-url-new", &[("0%, 35%", &[("opacity", "0")]), ("37%, 100%", &[("opacity", "1")])]);
         one_shot(&mut d, old, "ds-url-old", "forwards");
         assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
         d.set_style(old, "animationFillMode", "both");
@@ -3580,8 +3656,12 @@ mod tests {
             ("animationIterationCount", "1.5"),
             ("animationDuration", "120s"),
             ("animationTimeline", "view()"),
+            ("animationPlayState", "paused"),
             ("animationName", "ds-url-new"),
             ("animationName", "unknown-keyframes"),
+            // A second animation setting opacity: which wins depends on order
+            // and composition, so neither decides.
+            ("animationName", "ds-url-old, ds-url-new"),
         ];
         for (prop, value) in cases {
             one_shot(&mut d, old, "ds-url-old", "forwards");
@@ -3596,10 +3676,27 @@ mod tests {
         assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
 
         // Paired by position: the second name takes the second fill mode.
-        one_shot(&mut d, old, "ds-url-new, ds-url-old", "none, forwards");
+        set_keyframes(&mut d, "drift", &[("to", &[("transform", "translateY(4px)")])]);
+        one_shot(&mut d, old, "drift, ds-url-old", "none, forwards");
         assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
         d.set_style(old, "animationFillMode", "forwards, none");
         assert_eq!(text(&d, old), None);
+
+        // The end is the frame at 100%, wherever the stylesheet lists it.
+        set_keyframes(&mut d, "out-of-order", &[("to", &[("opacity", "0")]), ("from", &[("opacity", "1")])]);
+        one_shot(&mut d, old, "out-of-order", "forwards");
+        assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
+        set_keyframes(&mut d, "out-of-order", &[("to", &[("opacity", "1")]), ("from", &[("opacity", "0")])]);
+        assert_eq!(text(&d, old), None);
+        // With no frame at 100% the box ends on its own opacity: unknown.
+        set_keyframes(&mut d, "dip", &[("50%", &[("opacity", "0")])]);
+        one_shot(&mut d, old, "dip", "forwards");
+        assert_eq!(text(&d, old), None);
+        // Keyframes recorded without their selectors: unknown.
+        d.keyframe_keys.remove("ds-url-old");
+        one_shot(&mut d, old, "ds-url-old", "forwards");
+        assert_eq!(text(&d, old), None);
+        set_keyframes(&mut d, "ds-url-old", &[("0%, 35%", &[("opacity", "1")]), ("36%, 100%", &[("opacity", "0")])]);
 
         // A capture that saw nothing running, and a recording made before
         // the fill mode, direction, duration and delay were read, keep base
@@ -3610,7 +3707,7 @@ mod tests {
         d.el_mut(old).running_animations = None;
         assert_eq!(text(&d, old), None);
         one_shot(&mut d, old, "ds-url-old", "forwards");
-        for prop in ["animationFillMode", "animationDirection", "animationDuration", "animationDelay"] {
+        for prop in ["animationFillMode", "animationDirection", "animationDuration", "animationDelay", "animationPlayState"] {
             one_shot(&mut d, old, "ds-url-old", "forwards");
             d.set_style(old, prop, "");
             assert_eq!(text(&d, old), None, "{prop} unrecorded");
@@ -3652,6 +3749,15 @@ mod tests {
         d.set_rect(buried, 15.0, 100.0, 312.0, 390.0);
         assert_eq!(raster(&d, buried), None);
 
+        // A video that is not drawn replaces nothing.
+        d.set_style(wrap, "opacity", "0");
+        assert_eq!(raster(&d, poster), None);
+        d.set_style(wrap, "opacity", "1");
+        d.set_style(video, "visibility", "hidden");
+        assert_eq!(raster(&d, poster), None);
+        d.set_style(video, "visibility", "visible");
+        assert_eq!(raster(&d, poster), Some(Unpainted::StateLayer));
+
         // The video moved off the poster's box: reported.
         d.set_rect(wrap, 15.0, 1200.0, 312.0, 390.0);
         d.set_rect(video, 15.0, 1200.0, 312.0, 390.0);
@@ -3684,6 +3790,16 @@ mod tests {
         d.set_style(note, "animationIterationCount", "infinite");
         d.keyframes.insert("orb-note".into(), frames(&[&[("opacity", "0.7")], &[("opacity", "1")]]));
         assert!(!loops_in_motion(&d, note));
+        // Paused, or with a second animation setting opacity: not decided.
+        d.keyframes.insert("orb-note".into(), frames(&[&[("opacity", "0")], &[("opacity", "1")]]));
+        assert!(loops_in_motion(&d, note));
+        d.set_style(note, "animationPlayState", "paused");
+        assert!(!loops_in_motion(&d, note));
+        d.set_style(note, "animationPlayState", "running");
+        d.keyframes.insert("hold".into(), frames(&[&[("opacity", "1")]]));
+        d.set_style(note, "animationName", "orb-note, hold");
+        assert!(!loops_in_motion(&d, note));
+        d.set_style(note, "animationName", "orb-note");
         // A marquee moves only its transform.
         d.keyframes.insert("orb-note".into(), frames(&[&[("transform", "translateX(0)")], &[("transform", "translateX(-50%)")]]));
         assert!(!loops_in_motion(&d, note));

@@ -17,7 +17,8 @@
        - a segment parked at opacity 0.28 and scaled, waiting on an opacity
          transition, against the same segment with no transition;
        - the poster of a video at opacity 0 beside the video's wrapper,
-         against an image at 0 beside a wrapper holding another image;
+         against an image at 0 beside a wrapper holding another image, and
+         a poster beside a video that is itself at opacity 0;
        - copy a delayed fade-in holds at 0 and a menu slid off the page,
          which leave the page with no hidden share to report.
 
@@ -25,7 +26,8 @@
        is measured. Explicit pixel sizes throughout. */
     body { margin: 0; font-family: system-ui, sans-serif; font-size: 16px; color: #111111; background: #ffffff; }
     main { width: 1100px; margin: 0 auto; padding: 24px 0; }
-    p { width: 900px; }
+    .col { display: inline-block; width: 520px; vertical-align: top; }
+    p { width: 500px; }
 
     @keyframes url-old { 0% { opacity: 1; } 100% { opacity: 0; } }
     @keyframes sent { 0% { opacity: 0; } 100% { opacity: 1; } }
@@ -34,8 +36,8 @@
     .fades-for-good { animation: url-old 10s linear 40s forwards; }
     .fades-and-returns { animation: url-old 10s linear 40s none; }
 
-    .stage { width: 1000px; padding: 24px; background: #0f203b; }
-    .segment { width: 900px; height: 80px; opacity: 0.28; transform: scale(0.982) translateY(18px); }
+    .stage { width: 472px; padding: 24px; background: #0f203b; }
+    .segment { width: 440px; height: 80px; opacity: 0.28; transform: scale(0.982) translateY(18px); }
     .segment h3 { margin: 0; font-size: 22px; line-height: 32px; color: #ffffff; }
     .segment.waits { transition: opacity 0.5s, transform 0.5s; }
 
@@ -44,6 +46,7 @@
     .card .layer > video, .card .layer > img { display: block; width: 312px; height: 390px; }
     .card > img { display: block; width: 312px; height: 390px; opacity: 0; }
 
+    .card .layer.unseen { opacity: 0; }
     .bubble { opacity: 0; animation: sent 1s ease-out 40s forwards; }
 
     .drawer-panel { position: absolute; left: 0; top: 0; width: 1280px; height: 600px; transform: translateX(-1280px); transition: transform 0.3s; }
@@ -53,37 +56,47 @@
 <body>
   <main>
     <h1>Not at rest, timed</h1>
-    <p>Each case below pairs a measurement a visitor meets with the same measurement taken in a frame they never meet.</p>
 
-    <!-- PASS: the outgoing host of a URL swap, fading out for good -->
-    <div class="bar"><a href="#mail" id="pass-url-old" class="host fades-for-good">mail.google.com</a></div>
-    <!-- FLAG: the same fade, which hands the link back to opacity 1 -->
-    <div class="bar"><a href="#cal" id="flag-url-old" class="host fades-and-returns">calendar.google.com</a></div>
-
-    <div class="stage">
-      <!-- PASS: a segment parked on an opacity transition, waiting its turn -->
-      <article class="segment waits"><h3 id="pass-segment-heading">Behaviours</h3></article>
-      <!-- FLAG: the same segment, faded at rest -->
-      <article class="segment"><h3 id="flag-segment-heading">Hydration</h3></article>
+    <div class="col" id="should-flag">
+      <h2>Should flag</h2>
+      <!-- FLAG: a fade that hands the link back to its own opacity 1 -->
+      <div class="bar"><a href="#cal" id="flag-url-old" class="host fades-and-returns">calendar.google.com</a></div>
+      <div class="stage">
+        <!-- FLAG: a segment faded at rest, with no transition to leave by -->
+        <article class="segment"><h3 id="flag-segment-heading">Hydration</h3></article>
+      </div>
+      <!-- FLAG: an image at 0 beside a wrapper holding another image, nothing moving it -->
+      <div class="card">
+        <div class="layer"><img src="assets/screenshot-inbox.png" alt="Inbox view"></div>
+        <img id="flag-buried-beside-photo" src="assets/screenshot-library.png" alt="Library view">
+      </div>
+      <!-- FLAG: a poster beside a video that is itself at opacity 0 -->
+      <div class="card">
+        <div class="layer unseen"><video muted playsinline width="312" height="390"></video></div>
+        <img id="flag-poster-unseen-video" src="assets/screenshot-library.png" alt="Unseen preview">
+      </div>
     </div>
 
-    <!-- PASS: the poster of a video, beside the wrapper of the video playing over it -->
-    <div class="card">
-      <div class="layer"><video muted playsinline width="312" height="390"></video></div>
-      <img id="pass-poster" src="assets/screenshot-library.png" alt="Live preview">
-    </div>
-    <!-- FLAG: an image at 0 beside a wrapper holding another image, nothing moving it -->
-    <div class="card">
-      <div class="layer"><img src="assets/screenshot-inbox.png" alt="Inbox view"></div>
-      <img id="flag-buried-beside-photo" src="assets/screenshot-library.png" alt="Library view">
-    </div>
-
-    <!-- PASS: chat copy a delayed fade-in holds at 0; it shows forty seconds in -->
-    <div class="bubble" id="pass-bubble">
-      <p>ok, moving the stand-up to ten tomorrow so the design review can take the early slot, and the release notes go out after lunch once the changelog is checked.</p>
-      <p>Send me the agenda when it is ready and I will add the two items from the support queue, the billing export and the shared inbox filters.</p>
-      <p>The migration window is Thursday night; the status page goes up an hour before, and the rollback plan is the same one we used in March.</p>
-      <p>If the numbers look right on Friday morning we close the ticket, write the short summary for the board and move on to the onboarding work.</p>
+    <div class="col" id="should-pass">
+      <h2>Should pass</h2>
+      <!-- PASS: the outgoing host of a URL swap, fading out for good -->
+      <div class="bar"><a href="#mail" id="pass-url-old" class="host fades-for-good">mail.google.com</a></div>
+      <div class="stage">
+        <!-- PASS: a segment parked on an opacity transition, waiting its turn -->
+        <article class="segment waits"><h3 id="pass-segment-heading">Behaviours</h3></article>
+      </div>
+      <!-- PASS: the poster of a video, beside the wrapper of the video playing over it -->
+      <div class="card">
+        <div class="layer"><video muted playsinline width="312" height="390"></video></div>
+        <img id="pass-poster" src="assets/screenshot-library.png" alt="Live preview">
+      </div>
+      <!-- PASS: chat copy a delayed fade-in holds at 0; it shows forty seconds in -->
+      <div class="bubble" id="pass-bubble">
+        <p>ok, moving the stand-up to ten tomorrow so the design review can take the early slot, and the release notes go out after lunch once the changelog is checked.</p>
+        <p>Send me the agenda when it is ready and I will add the two items from the support queue, the billing export and the shared inbox filters.</p>
+        <p>The migration window is Thursday night; the status page goes up an hour before, and the rollback plan is the same one we used in March.</p>
+        <p>If the numbers look right on Friday morning we close the ticket, write the short summary for the board and move on to the onboarding work.</p>
+      </div>
     </div>
   </main>
 

@@ -86,6 +86,7 @@ fn what_a_timed_change_is_about_to_move_is_not_scored() {
         ("undersized-ui-text", "#flag-url-old"),
         ("low-contrast", "#flag-segment-heading"),
         ("buried-raster", "#flag-buried-beside-photo"),
+        ("buried-raster", "#flag-poster-unseen-video"),
     ] {
         assert!(on(want.0, want.1), "missing {want:?} in {flagged:#?}");
     }

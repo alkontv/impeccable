@@ -780,7 +780,7 @@ fn opacity_at_rest(dom: &dyn Dom, el: ElId, opacity: f64) -> bool {
     if has_active_blur(&dom.style(el, "filter")) {
         return false;
     }
-    if crate::browser::painted::declares_transition_of(dom, el, "opacity") && is_displaced(dom, el) {
+    if crate::browser::painted::declares_transition_of(dom, el, "opacity") && visibly_displaced(dom, el) {
         return false;
     }
     opacity >= REVEAL_OPACITY || !is_moving(dom, el)
@@ -1115,6 +1115,33 @@ fn is_displaced(dom: &dyn Dom, el: ElId) -> bool {
         let v = js::trim(&v);
         !v.is_empty() && v != "none"
     })
+}
+
+/// A box that [`is_displaced`] names and that is really moved: `translate:
+/// 0px`, `scale: 1` and `rotate: 0deg` move nothing, though they are not
+/// `none`.
+fn visibly_displaced(dom: &dyn Dom, el: ElId) -> bool {
+    let transform = js::trim(&dom.style(el, "transform")).replace(' ', "");
+    if !transform.is_empty() && transform != "none" && !is_identity_matrix(&transform) {
+        return true;
+    }
+    let numbers = |v: &str| -> Vec<f64> { v.split_whitespace().map(parse_float).collect() };
+    let moved = |prop: &str, rest: f64| {
+        let v = dom.style(el, prop);
+        let v = js::trim(&v);
+        if v.is_empty() || v == "none" {
+            return false;
+        }
+        // An angle with an axis (`x 10deg`) or a value that does not read
+        // counts as moved.
+        numbers(v).iter().any(|n| !n.is_finite() || (n - rest).abs() > 1e-9)
+    };
+    moved("translate", 0.0) || moved("scale", 1.0) || moved("rotate", 0.0)
+}
+
+/// `matrix()` or `matrix3d()` of the identity, spaces removed.
+pub(crate) fn is_identity_matrix(t: &str) -> bool {
+    t == "matrix(1,0,0,1,0,0)" || t == "matrix3d(1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1)"
 }
 
 /// The ink a reader sees once the opacity of the boxes between the text and
@@ -8848,6 +8875,17 @@ mod tests {
         d.set_styles(wrap, &[("transform", "none"), ("willChange", "transform")]);
         assert!(!super::caught_mid_reveal(&d, word));
         assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        // `translate: 0px`, `scale: 1` and `rotate: 0deg` move nothing.
+        for (prop, value) in [("translate", "0px"), ("scale", "1"), ("rotate", "0deg")] {
+            parked(&mut d, wrap);
+            d.set_styles(wrap, &[("transform", "none"), (prop, value)]);
+            assert!(!super::caught_mid_reveal(&d, word), "{prop}: {value}");
+            d.set_style(wrap, prop, "none");
+        }
+        parked(&mut d, wrap);
+        d.set_styles(wrap, &[("transform", "none"), ("scale", "0.982")]);
+        assert!(super::caught_mid_reveal(&d, word));
+        d.set_style(wrap, "scale", "none");
         // Displaced with no opacity transition: at rest too.
         parked(&mut d, wrap);
         d.set_styles(wrap, &[("transitionProperty", "transform"), ("transitionDuration", "0.5s")]);

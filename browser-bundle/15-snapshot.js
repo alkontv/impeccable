@@ -21,7 +21,7 @@
 // lists agree).
 const __SNAP_STYLE_PROPS = [
   "animationDelay", "animationDirection", "animationDuration", "animationFillMode",
-  "animationIterationCount", "animationName", "animationTimeline", "animationTimingFunction",
+  "animationIterationCount", "animationName", "animationPlayState", "animationTimeline", "animationTimingFunction",
   "aspectRatio", "backdropFilter", "backfaceVisibility", "background", "backgroundClip",
   "backgroundColor", "backgroundImage", "backgroundPosition", "backgroundSize",
   "blockSize", "borderBottomColor", "borderBottomWidth", "borderBottomStyle",
@@ -427,7 +427,10 @@ function __snapLinkedStylesheetText() {
 
 // Every @keyframes rule, in document.styleSheets order (nested rules walked
 // breadth-first like 10-probe.js keyframes()); first rule per name wins.
-function __snapKeyframes() {
+// `keysOut`, when given, receives `[name, [keyText, ...]]` per rule, one
+// selector per recorded frame, so a reader knows which offsets each frame
+// sets.
+function __snapKeyframes(keysOut) {
   const out = [];
   const seen = new Set();
   for (const sheet of document.styleSheets) {
@@ -441,6 +444,7 @@ function __snapKeyframes() {
       if (rule.type !== 7 || seen.has(rule.name)) continue;
       seen.add(rule.name);
       const frames = [];
+      const keys = [];
       for (const frame of rule.cssRules || []) {
         const fs = frame.style;
         if (!fs) continue;
@@ -450,8 +454,10 @@ function __snapKeyframes() {
           decls.push([prop, fs.getPropertyValue(prop)]);
         }
         frames.push(decls);
+        keys.push(String(frame.keyText || ''));
       }
       out.push([rule.name, frames]);
+      if (keysOut) keysOut.push([rule.name, keys]);
     }
   }
   return out;
@@ -778,6 +784,7 @@ const __impeccableSnapshot = {
       const v = body.innerText;
       bodyInnerText = typeof v === 'string' ? v : null;
     }
+    const keyframeKeys = [];
     const snapshot = {
       v: 1,
       textLines: true,
@@ -788,7 +795,8 @@ const __impeccableSnapshot = {
       scrollX: window.scrollX,
       scrollY: window.scrollY,
       html: docClone.outerHTML,
-      keyframes: __snapKeyframes(),
+      keyframes: __snapKeyframes(keyframeKeys),
+      keyframeKeys,
       linkedCss: __snapLinkedStylesheetText(),
       styleProps: __SNAP_STYLE_PROPS,
       pseudoProps: __SNAP_PSEUDO_PROPS,
