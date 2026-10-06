@@ -22,7 +22,7 @@
 const __SNAP_STYLE_PROPS = [
   "animationIterationCount", "animationName", "animationTimeline", "animationTimingFunction",
   "aspectRatio", "backdropFilter", "backfaceVisibility", "background", "backgroundClip",
-  "backgroundColor", "backgroundImage", "backgroundPosition", "backgroundSize",
+  "backgroundColor", "backgroundImage", "backgroundPosition", "backgroundRepeat", "backgroundSize",
   "blockSize", "borderBottomColor", "borderBottomWidth", "borderBottomStyle",
   "borderLeftColor", "borderLeftWidth", "borderLeftStyle", "borderRadius",
   "borderRightColor", "borderRightWidth", "borderRightStyle",
