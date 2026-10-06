@@ -1759,10 +1759,10 @@ fn capture_post_scan(
 
 /// Measure the `drifted` selectors again every [`DRIFT_POLL`] until each is
 /// back within a viewport width of where the scan's capture had it, or
-/// [`DRIFT_REMEASURE`] runs out. One that comes back takes its new rect; one
-/// that does not keeps the rect first measured and is recorded in
-/// [`Evidence::element_drift`] with its rect in the capture. Best-effort: a
-/// failed measurement ends the wait.
+/// [`DRIFT_REMEASURE`] runs out. Every measure replaces the rect, so the rect
+/// is the latest one before the screenshot that follows; one that never came
+/// back is recorded in [`Evidence::element_drift`] with its rect in the
+/// capture. Best-effort: a failed measurement ends the wait.
 fn remeasure_drifted(
     page: &mut Page<'_>,
     ev: &mut Evidence,
@@ -1779,7 +1779,8 @@ fn remeasure_drifted(
   const identities = {ids};
   const nodes = {nodes};
   const vw = window.innerWidth || 0;
-  const back = {{}};
+  const rects = {{}};
+  const back = [];
   for (const s of {sels}) {{
     try {{
       const n = nodes[s];
@@ -1787,20 +1788,25 @@ fn remeasure_drifted(
       if (!el || !n) continue;
       const r = el.getBoundingClientRect();
       const rect = [r.x + window.scrollX, r.y + window.scrollY, r.width, r.height];
-      if (Math.max(Math.abs(rect[0] - n[1]), Math.abs(rect[1] - n[2])) <= vw) back[s] = rect;
+      rects[s] = rect;
+      if (Math.max(Math.abs(rect[0] - n[1]), Math.abs(rect[1] - n[2])) <= vw) back.push(s);
     }} catch (e) {{}}
   }}
-  return back;
+  return {{ rects, back }};
 }})()"#,
             resolve = fullpage::RESOLVE_FLAGGED_JS,
             ids = Value::Object(identities.clone()),
             nodes = Value::Object(nodes.clone()),
             sels = json!(drifted),
         );
-        let Ok(Value::Object(back)) = page.evaluate_value(&expr) else { break };
-        for (selector, rect) in back {
-            ev.element_rects.insert(selector.clone(), rect);
-            drifted.retain(|s| *s != selector);
+        let Ok(v) = page.evaluate_value(&expr) else { break };
+        if let Some(Value::Object(rects)) = v.get("rects") {
+            for (selector, rect) in rects {
+                ev.element_rects.insert(selector.clone(), rect.clone());
+            }
+        }
+        for selector in v.get("back").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            drifted.retain(|s| s != selector);
         }
     }
     for selector in drifted {

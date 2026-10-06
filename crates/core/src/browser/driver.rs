@@ -1626,17 +1626,29 @@ fn radial_halo_page_form_stands(dom: &dyn Dom, item: &PatternItem, root_dark: Op
 /// text cannot. Evidence only: the finding still names the page. `None` for
 /// other rules and when no painted element carries it.
 pub fn page_form_anchor(dom: &dyn Dom, rule: &str, detail: &str) -> Option<ElId> {
-    let carriers = match rule {
+    let mut carriers = match rule {
         "radial-halo" => HALO_COLOR_RE
             .captures(detail)
             .map(|m| elements_painting_halo(dom, &crate::js::to_lower_case(&m[1])))?,
         "dark-glow" => glow_declaration(detail).map(|(prop, hex)| elements_casting_glow(dom, &prop, &hex))?,
         _ => return None,
     };
+    // A halo fades to transparent: an opaque radial fill in the same colour
+    // earlier in the page is not the declaration the finding names, so the
+    // gradients that fade out go first.
+    if rule == "radial-halo" {
+        carriers.sort_by_key(|&el| !FADES_OUT_RE.is_match(&dom.style(el, "backgroundImage")));
+    }
     carriers
         .into_iter()
         .find(|&el| super::painted::unpainted_for(dom, el, super::painted::PaintGate::Box).is_none())
 }
+
+/// A computed gradient with a fully transparent stop (`transparent`
+/// computes to `rgba(0, 0, 0, 0)`).
+static FADES_OUT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"rgba\([^)]*,\s*0(?:\.0+)?\s*\)|transparent").expect("FADES_OUT_RE")
+});
 
 static HALO_COLOR_RE: once_cell::sync::Lazy<regex::Regex> =
     once_cell::sync::Lazy::new(|| regex::Regex::new(r"halo \((#[0-9a-fA-F]+) ").expect("HALO_COLOR_RE"));
@@ -4287,6 +4299,19 @@ mod page_level_form_tests {
         d.set_style(orb, "backgroundImage", gradient);
         let detail = "radial-gradient halo (#7c6af7 → transparent) on dark page";
         assert_eq!(page_form_anchor(&d, "radial-halo", detail), Some(orb));
+        // An opaque radial fill in the same colour, earlier on the page, is
+        // not the halo: the gradient that fades out is.
+        {
+            let mut d = FakeDom::new();
+            let (_html, body) = d.with_page();
+            let badge = d.add(Some(body), "span");
+            d.set_rect(badge, 20.0, 20.0, 80.0, 80.0);
+            d.set_style(badge, "backgroundImage", "radial-gradient(circle, rgb(124, 106, 247) 0%, rgb(60, 40, 200) 100%)");
+            let orb = d.add(Some(body), "div");
+            d.set_rect(orb, 100.0, 40.0, 700.0, 700.0);
+            d.set_style(orb, "backgroundImage", gradient);
+            assert_eq!(page_form_anchor(&d, "radial-halo", detail), Some(orb));
+        }
         assert_eq!(page_form_anchor(&d, "radial-halo", "radial-gradient halo (#ffb27a → transparent) on dark page"), None);
         assert_eq!(page_form_anchor(&d, "gradient-text", detail), None);
 
