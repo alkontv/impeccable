@@ -3153,7 +3153,10 @@ fn is_scroller_arrow(dom: &dyn Dom, top: ElId, victim: ElId) -> bool {
         if scrolls_x(sc) {
             let sr = dom.rect(sc);
             let cr = dom.rect(control);
-            if !(sr.height > 0.0 && cr.width > 0.0) {
+            // A strip that has something to page to, and a control the size
+            // of an arrow at its end, not a panel over it.
+            let overflows = dom.scroll_width(sc) > dom.client_width(sc) + 1.0;
+            if !(sr.height > 0.0 && cr.width > 0.0) || !overflows || cr.width > 0.25 * sr.width {
                 return false;
             }
             let spans = cr.top <= sr.top + 0.1 * sr.height && cr.bottom >= sr.bottom - 0.1 * sr.height;
@@ -3445,12 +3448,17 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
         // words) has no text under it to cover, and the share is taken over
         // the points on the lines. Under a rotation or skew a line's rect is
         // the bounds of a tilted line, not the line, so the grid stands.
+        let points = occlusion_probe_points(rect, vw, vh);
         let lines = if drawn_tilted(dom, el) {
             None
         } else {
             dom.text_line_rects(el).filter(|l| !l.is_empty() && l.iter().all(|r| r.all_finite()))
-        };
-        for (x, y) in occlusion_probe_points(rect, vw, vh) {
+        }
+        // A grid none of whose points lands on a line (one centred line in a
+        // tall box, between two grid rows) says nothing either way; the
+        // whole grid stands.
+        .filter(|l| points.iter().any(|&(x, y)| l.iter().any(|r| rect_holds_point(r, x, y))));
+        for (x, y) in points {
             if lines.as_ref().is_some_and(|l| !l.iter().any(|r| rect_holds_point(r, x, y))) {
                 continue;
             }
@@ -6020,6 +6028,22 @@ mod tests {
         };
         assert_eq!(run(false), 1, "the box, as before");
         assert_eq!(run(true), 0, "the lines end before the sticker");
+
+        // One centred line in a tall box, between the grid's rows: no point
+        // lands on it, and the whole grid stands.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let label = d.add(Some(body), "div");
+        d.add_text(label, "Covered label");
+        d.set_styles(label, PROBE_BASE);
+        d.set_rect(label, 40.0, 100.0, 200.0, 120.0);
+        d.set_text_lines(label, &[(40.0, 151.0, 200.0, 18.0)]);
+        let cover = d.add(Some(body), "div");
+        d.set_styles(cover, PROBE_BASE);
+        d.set_styles(cover, &[("position", "absolute"), ("backgroundColor", "rgb(20, 20, 20)")]);
+        d.set_rect(cover, 40.0, 100.0, 200.0, 120.0);
+        mark_body_descendants(&mut d);
+        assert_eq!(check_text_occlusion_dom(&d).iter().filter(|f| f.el == Some(label)).count(), 1);
     }
 
     /// observations-42 row 13, lance.com.br: a strip that scrolls sideways
@@ -6027,7 +6051,7 @@ mod tests {
     /// over the card that peeks out under it.
     #[test]
     fn text_occlusion_skips_a_scrollers_paging_arrow() {
-        let run = |position: &str, height: f64| {
+        let run = |position: &str, height: f64, scroll_width: f64| {
             let mut d = FakeDom::new();
             let (_h, body) = d.with_page();
             let section = d.add(Some(body), "section");
@@ -6037,6 +6061,8 @@ mod tests {
             d.set_styles(strip, PROBE_BASE);
             d.set_styles(strip, &[("overflowX", "scroll")]);
             d.set_rect(strip, 208.0, 54.0, 1072.0, 154.0);
+            d.el_mut(strip).client_width = 1072.0;
+            d.el_mut(strip).scroll_width = scroll_width;
             let card = d.add(Some(strip), "span");
             d.add_text(card, "UEFA Nations League");
             d.set_styles(card, PROBE_BASE);
@@ -6049,8 +6075,9 @@ mod tests {
             mark_body_descendants(&mut d);
             check_text_occlusion_dom(&d).into_iter().filter(|f| f.el == Some(card)).count()
         };
-        assert_eq!(run("absolute", 154.0), 0, "the strip's own arrow");
-        assert_eq!(run("absolute", 40.0), 1, "a small box over the card");
+        assert_eq!(run("absolute", 154.0, 1400.0), 0, "the strip's own arrow");
+        assert_eq!(run("absolute", 40.0, 1400.0), 1, "a small box over the card");
+        assert_eq!(run("absolute", 154.0, 1072.0), 1, "a strip with nothing to page to");
     }
 
     /// observations-42 row 17, suitemigration.com: a probe over a stacked

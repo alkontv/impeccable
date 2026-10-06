@@ -142,7 +142,7 @@ pub fn has_visible_background_boundary(dom: &dyn Dom, el: ElId) -> bool {
     }
     let mut parent = dom.parent(el);
     while let Some(p) = parent {
-        if gradient_paints_only(dom, p, &bg) {
+        if gradient_paints_only(dom, p, el, &bg) {
             return false;
         }
         let parent_bg = dom.style(p, "backgroundColor");
@@ -166,20 +166,69 @@ pub fn has_visible_background_boundary(dom: &dyn Dom, el: ElId) -> bool {
 /// transparent 50px, #f3f3f3 50px)` on the row, and the grey text panel in
 /// the row is the same grey. A picture (`url(...)`) or a gradient this
 /// cannot read says nothing, and the walk goes on as before.
-fn gradient_paints_only(dom: &dyn Dom, node: ElId, fill: &str) -> bool {
+///
+/// A gradient with transparent stops paints the fill only where those stops
+/// are not: it is read only in the one shape freddiemac.com uses, a single
+/// `linear-gradient` running to one side that is transparent up to a length
+/// and the fill after it, and only when `el` lies wholly in the filled part.
+fn gradient_paints_only(dom: &dyn Dom, node: ElId, el: ElId, fill: &str) -> bool {
     let image = dom.style(node, "backgroundImage");
     if image.is_empty() || image == "none" || !image.contains("gradient(") || image.contains("url(") {
         return false;
     }
     let colors = crate::color::parse_gradient_colors(Some(&image));
     let shown: Vec<_> = colors.iter().filter(|c| c.alpha_or_one() > 0.05).collect();
-    !shown.is_empty()
+    let matches = !shown.is_empty()
         && shown.iter().all(|c| {
             colors_nearly_match(
                 Some(fill),
                 Some(&format!("rgba({}, {}, {}, {})", c.r, c.g, c.b, c.alpha_or_one())),
             )
-        })
+        });
+    if !matches {
+        return false;
+    }
+    if shown.len() == colors.len() {
+        return true;
+    }
+    match transparent_lead(&image) {
+        Some((side, len)) => {
+            let host = dom.rect(node);
+            let r = dom.rect(el);
+            let start = |l: f64| if len.1 { l * len.0 / 100.0 } else { len.0 };
+            match side {
+                "right" => r.left >= host.left + start(host.width) - 0.5,
+                "left" => r.right <= host.right - start(host.width) + 0.5,
+                "bottom" => r.top >= host.top + start(host.height) - 0.5,
+                _ => r.bottom <= host.bottom - start(host.height) + 0.5,
+            }
+        }
+        None => false,
+    }
+}
+
+static TRANSPARENT_LEAD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"^linear-gradient\(to (right|left|bottom|top), (?:transparent|rgba\(0, 0, 0, 0\)) ([0-9.]+)(px|%), (rgba?\([^)]*\)|#[0-9a-fA-F]+) ([0-9.]+)(px|%)\)$",
+    )
+    .unwrap()
+});
+
+/// `(side, (length, is_percent))` of a `linear-gradient(to <side>,
+/// transparent <len>, <colour> <same len>)`: a hard edge where the fill
+/// starts.
+fn transparent_lead(image: &str) -> Option<(&'static str, (f64, bool))> {
+    let m = TRANSPARENT_LEAD_RE.captures(js::trim(image))?;
+    if m[2] != m[5] || m[3] != m[6] {
+        return None;
+    }
+    let side = match &m[1] {
+        "right" => "right",
+        "left" => "left",
+        "bottom" => "bottom",
+        _ => "top",
+    };
+    Some((side, (parse_float(&m[2]), &m[3] == "%")))
 }
 
 /// Whether a box laid under `el`'s rect paints a photo there: an `img` or
@@ -193,13 +242,32 @@ fn raster_covers(dom: &dyn Dom, layer: ElId, r: &Rect) -> bool {
         nr.left <= r.left + 1.0 && nr.right >= r.right - 1.0 && nr.top <= r.top + 1.0 && nr.bottom >= r.bottom - 1.0
     };
     let is_raster = |n: ElId| matches!(tag_lower(dom, n).as_str(), "img" | "video");
+    // The photo has to paint: shown, and not faded out by itself or a box
+    // between it and the layer.
+    let paints = |n: ElId| {
+        if dom.style(n, "display") == "none" || dom.style(n, "visibility") == "hidden" {
+            return false;
+        }
+        let mut cur = Some(n);
+        while let Some(c) = cur {
+            let o = parse_float(&dom.style(c, "opacity"));
+            if o.is_finite() && o <= 0.05 {
+                return false;
+            }
+            if c == layer {
+                break;
+            }
+            cur = dom.parent(c);
+        }
+        true
+    };
     if is_raster(layer) {
-        return covers(layer);
+        return paints(layer) && covers(layer);
     }
     dom.query_all(Some(layer), "img, video")
         .unwrap_or_default()
         .into_iter()
-        .any(|n| dom.style(n, "display") != "none" && dom.style(n, "visibility") != "hidden" && covers(n))
+        .any(|n| paints(n) && covers(n))
 }
 
 /// Whether the fill `el` paints lies on a layer painting the same colour: a
@@ -3584,6 +3652,17 @@ mod tests {
         assert_eq!(cramped(&d, wrap), right, "another colour");
         let (d, _, wrap) = wrapper_in_row("rgba(0, 0, 0, 0)", "url(\"card.png\")");
         assert_eq!(cramped(&d, wrap), right, "a picture");
+        // The panel over the transparent part of the row shows the page.
+        let (d, _, wrap) = wrapper_in_row(
+            "rgba(0, 0, 0, 0)",
+            "linear-gradient(to right, rgba(0, 0, 0, 0) 200px, rgb(243, 243, 243) 200px)",
+        );
+        assert_eq!(cramped(&d, wrap), right, "over the transparent part");
+        let (d, _, wrap) = wrapper_in_row(
+            "rgba(0, 0, 0, 0)",
+            "linear-gradient(to right, rgba(0, 0, 0, 0) 20%, rgb(243, 243, 243) 20%)",
+        );
+        assert!(cramped(&d, wrap).is_empty(), "past 20% of the row");
     }
 
     /// observations-42 row 5, telekom.de: the magenta card sits on a photo
@@ -3625,6 +3704,11 @@ mod tests {
         let (d, card) = page(true);
         assert!(cramped(&d, card).is_empty(), "{:?}", cramped(&d, card));
         let (d, card) = page(false);
+        assert_eq!(cramped(&d, card), vec!["<div> \"teaser\": children flush against bg on top/left (no inset)"]);
+        // A photo that paints nothing is no backdrop.
+        let (mut d, card) = page(true);
+        let img = d.query_all(None, "img").unwrap()[0];
+        d.set_style(img, "opacity", "0");
         assert_eq!(cramped(&d, card), vec!["<div> \"teaser\": children flush against bg on top/left (no inset)"]);
         // Drawn content is not a photo: a panel on a map canvas keeps its
         // edge.
