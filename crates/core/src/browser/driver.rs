@@ -1616,6 +1616,28 @@ fn radial_halo_page_form_stands(dom: &dyn Dom, item: &PatternItem, root_dark: Op
     dark_claim_stands(root_dark, &surfaces)
 }
 
+/// The element a page-level stylesheet finding (reported on `body`) can be
+/// shown on: the first element painted at capture whose computed style
+/// carries the declaration the finding names, a radial-gradient halo or a
+/// glow in the finding's colour. Computed values have every `var()`
+/// resolved, so this finds the element a declaration spelled through a
+/// custom property paints on (`.g1 { background: radial-gradient(circle,
+/// var(--accent) 0%, transparent 70%) }`), which a reader of the stylesheet
+/// text cannot. Evidence only: the finding still names the page. `None` for
+/// other rules and when no painted element carries it.
+pub fn page_form_anchor(dom: &dyn Dom, rule: &str, detail: &str) -> Option<ElId> {
+    let carriers = match rule {
+        "radial-halo" => HALO_COLOR_RE
+            .captures(detail)
+            .map(|m| elements_painting_halo(dom, &crate::js::to_lower_case(&m[1])))?,
+        "dark-glow" => glow_declaration(detail).map(|(prop, hex)| elements_casting_glow(dom, &prop, &hex))?,
+        _ => return None,
+    };
+    carriers
+        .into_iter()
+        .find(|&el| super::painted::unpainted_for(dom, el, super::painted::PaintGate::Box).is_none())
+}
+
 static HALO_COLOR_RE: once_cell::sync::Lazy<regex::Regex> =
     once_cell::sync::Lazy::new(|| regex::Regex::new(r"halo \((#[0-9a-fA-F]+) ").expect("HALO_COLOR_RE"));
 
@@ -4247,6 +4269,34 @@ mod page_level_form_tests {
         d.add_selector(hero, ".hero");
         d.set_rect(hero, 1093.0, 8.0, 142.0, 142.0);
         assert_eq!(details(&scan(&d), "radial-halo"), vec![(body, reported)]);
+    }
+
+    /// round 9 (nemonix.app, emotionalcomputing.co.uk): a halo declared
+    /// through `var()` is reported on `body`, and its evidence anchor is the
+    /// painted element whose computed background carries it.
+    #[test]
+    fn a_page_form_is_anchored_on_the_painted_element_that_carries_it() {
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        let gradient = "radial-gradient(circle, rgb(124, 106, 247) 0%, rgba(0, 0, 0, 0) 70%)";
+        // A carrier with no box, first in the document, is passed over.
+        let closed = d.add(Some(body), "div");
+        d.set_style(closed, "backgroundImage", gradient);
+        let orb = d.add(Some(body), "div");
+        d.set_rect(orb, 100.0, 40.0, 700.0, 700.0);
+        d.set_style(orb, "backgroundImage", gradient);
+        let detail = "radial-gradient halo (#7c6af7 → transparent) on dark page";
+        assert_eq!(page_form_anchor(&d, "radial-halo", detail), Some(orb));
+        assert_eq!(page_form_anchor(&d, "radial-halo", "radial-gradient halo (#ffb27a → transparent) on dark page"), None);
+        assert_eq!(page_form_anchor(&d, "gradient-text", detail), None);
+
+        let button = d.add(Some(body), "a");
+        d.set_rect(button, 400.0, 560.0, 176.0, 56.0);
+        d.set_style(button, "boxShadow", "rgb(124, 106, 247) 0px 0px 24px 0px");
+        assert_eq!(
+            page_form_anchor(&d, "dark-glow", "Zero-offset box-shadow glow (#7c6af7) on dark page"),
+            Some(button)
+        );
     }
 
     #[test]
