@@ -275,28 +275,51 @@ fn managers_json() -> Value {
 /// the rule pass's painted predicate does (`OutsideDocument`, `ClippedOut`).
 /// An overflow clip counts only on the ancestors that clip the box: an
 /// absolutely positioned box escapes the static ones between it and its
-/// containing block, and a fixed box all of them.
+/// containing block, and a fixed box every one below the ancestor that holds
+/// it (a transform, a filter, containment), or all of them when none does.
 const SHOWING_JS: &str = r#"const q = s => { try { return Array.from(document.querySelectorAll(s)); } catch (e) { return []; } };
   const flatUp = n => n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
+  // Whether a box makes a fixed descendant scroll with it (a transform, a
+  // filter, layout or paint containment), as the full-page screenshot asks.
+  const holdsFixed = cs => {
+    const none = v => !v || v === 'none';
+    return !none(cs.transform) || !none(cs.translate) || !none(cs.scale) || !none(cs.rotate)
+      || !none(cs.filter) || !none(cs.backdropFilter) || !none(cs.perspective)
+      || /transform|translate|scale|rotate|filter|perspective/.test(cs.willChange || '')
+      || /paint|layout|strict|content/.test(cs.contain || '');
+  };
   const parkedAway = (el, r) => {
     const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
     const de = document.documentElement;
-    let escaping = false;
-    let fixed = false;
-    let n = 0;
-    for (let a = el; a && a !== de && a !== document.body && n < 60; a = flatUp(a), n++) {
-      const cs = getComputedStyle(a);
-      if (a !== el && cs.display !== 'contents' && (!escaping || cs.position !== 'static')) {
-        const clipX = cs.overflowX !== 'visible', clipY = cs.overflowY !== 'visible';
-        if (clipX || clipY) {
-          const pr = a.getBoundingClientRect();
-          if ((clipX && (r.right <= pr.left || r.left >= pr.right)) || (clipY && (r.bottom <= pr.top || r.top >= pr.bottom))) return true;
-        }
+    const top = a => !a || a === de || a === document.body;
+    // Up the chain of boxes that hold the box, each one's clip asked: an
+    // in-flow box's parent, an absolutely positioned box's nearest
+    // positioned (or fixed-holding) ancestor, a fixed box's nearest
+    // fixed-holding ancestor, or the viewport when it has none.
+    let pos = getComputedStyle(el).position;
+    let cur = el;
+    let viewport = false;
+    for (let n = 0; n < 60; n++) {
+      let a = flatUp(cur);
+      let cs = null;
+      for (; !top(a) && n < 60; a = flatUp(a), n++) {
+        cs = getComputedStyle(a);
+        if (cs.display === 'contents') continue;
+        if (pos === 'fixed' ? holdsFixed(cs) : pos === 'absolute' ? (cs.position !== 'static' || holdsFixed(cs)) : true) break;
       }
-      if (cs.position === 'fixed') { fixed = true; break; }
-      if (cs.position !== 'static') escaping = cs.position === 'absolute';
+      if (top(a)) {
+        viewport = pos === 'fixed' && !(document.body && holdsFixed(getComputedStyle(document.body))) && !holdsFixed(getComputedStyle(de));
+        break;
+      }
+      const clipX = cs.overflowX !== 'visible', clipY = cs.overflowY !== 'visible';
+      if (clipX || clipY) {
+        const pr = a.getBoundingClientRect();
+        if ((clipX && (r.right <= pr.left || r.left >= pr.right)) || (clipY && (r.bottom <= pr.top || r.top >= pr.bottom))) return true;
+      }
+      cur = a;
+      pos = cs.position;
     }
-    if (fixed) return vw > 0 && vh > 0 && (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh);
+    if (viewport) return vw > 0 && vh > 0 && (r.right <= 0 || r.bottom <= 0 || r.left >= vw || r.top >= vh);
     if (r.bottom + window.scrollY <= 0) return true;
     const se = document.scrollingElement || de;
     const docW = se ? se.scrollWidth : 0;

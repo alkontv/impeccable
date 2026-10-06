@@ -24,8 +24,9 @@
 //! - A form two web components down counts as the page; a late banner its
 //!   manager closed by rewriting its style to the stamped
 //!   `display: none !important` stays closed; dialogs a fixed layer parks
-//!   past the viewport, or a collapsed wrapper clips away, are not showing;
-//!   and a banner that arrives during the scroll probe is hidden after it.
+//!   past the viewport, or a collapsed wrapper clips away, are not showing,
+//!   while a fixed bar a transformed ancestor holds below the fold is; and a
+//!   banner that arrives during the scroll probe is hidden after it.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -506,4 +507,17 @@ fn a_banner_the_scroll_probe_brings_in_is_hidden() {
         "{:?}",
         scan.notes
     );
+}
+
+#[test]
+fn a_fixed_banner_a_transformed_ancestor_holds_is_showing() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/held-fixed-banner.html");
+    let mut browser = engine.launch().expect("launch");
+    let (_, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    assert_eq!(evidence.consent.as_ref().expect("consent report").hidden, vec!["OneTrust"]);
 }

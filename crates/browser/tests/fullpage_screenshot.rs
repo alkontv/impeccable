@@ -551,15 +551,19 @@ fn serve_page(body: &'static str) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
+        // One thread per connection, so an idle connection the browser opens
+        // ahead of its request never holds up the one that asks.
         for mut stream in listener.incoming().flatten() {
-            let mut buf = [0u8; 8192];
-            let _ = stream.read(&mut buf);
-            let head = format!(
-                "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(head.as_bytes());
-            let _ = stream.write_all(body.as_bytes());
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+            });
         }
     });
     port

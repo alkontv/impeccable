@@ -277,6 +277,33 @@ const SCROLL_ORIGIN_JS: &str = r#"(() => {
   return origin;
 })()"#;
 
+/// The candidate's clip in document coordinates. The collector clamps a
+/// clip's x at 0, which on a page that scrolls from the right cuts every
+/// candidate in the overflow left of the viewport to the same x: there the
+/// element's box is read again, live, for its own x.
+fn document_clip(page: &mut Page<'_>, candidate: &Value, origin_x: f64) -> Option<Value> {
+    let clip = candidate.get("clip")?;
+    if !(origin_x < 0.0) || !clip.is_object() || num(clip.get("x")) > 0.0 {
+        return Some(clip.clone());
+    }
+    let selector = candidate.get("selector").and_then(Value::as_str).filter(|s| !s.is_empty());
+    let left = selector.and_then(|selector| {
+        page.evaluate_value(&format!(
+            "(el => el ? el.getBoundingClientRect().left + window.scrollX : null)(({PICK_CANDIDATE_JS})({}, {}))",
+            json!(selector),
+            candidate.get("match").cloned().unwrap_or(Value::Null)
+        ))
+        .ok()?
+        .as_f64()
+        .filter(|x| x.is_finite())
+    });
+    let mut clip = clip.clone();
+    if let (Some(left), Some(obj)) = (left, clip.as_object_mut()) {
+        obj.insert("x".into(), json!((left - 2.0).floor()));
+    }
+    Some(clip)
+}
+
 /// A candidate's document clip as a `Page.captureScreenshot` clip, whose x 0
 /// is the left edge of what the document scrolls ([`scroll_origin_x`]).
 fn capture_clip(clip: Option<&Value>, origin_x: f64) -> Option<Value> {
@@ -316,7 +343,10 @@ pub fn measure_visual_contrast_candidate(
     if visual::pixel_contrast_blocked(&reasons).is_some() {
         return Ok(PixelMeasure::default());
     }
-    let Some(clip) = sanitize_screenshot_clip(capture_clip(candidate.get("clip"), origin_x).as_ref(), Some(viewport_width)) else {
+    let Some(clip) = sanitize_screenshot_clip(
+        capture_clip(document_clip(page, candidate, origin_x).as_ref(), origin_x).as_ref(),
+        Some(viewport_width),
+    ) else {
         return Ok(PixelMeasure::default());
     };
     // A candidate past the document's content box (text inside an element the

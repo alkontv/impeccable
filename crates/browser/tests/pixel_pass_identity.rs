@@ -74,9 +74,10 @@ fn a_repeated_id_does_not_send_the_pixel_pass_to_a_collapsed_copy() {
 
 /// A right-to-left page wider than the viewport keeps its overflow at
 /// negative document x, and a beyond-viewport clip's x 0 is the left edge of
-/// that overflow. White text on pale vector artwork, inside the first
-/// viewport at the right, only the pixel pass can answer; its clip has to be
-/// moved by the scroll origin or both shots read the overflow instead.
+/// that overflow. White text on pale vector artwork only the pixel pass can
+/// answer, once inside the first viewport at the right and once in the
+/// overflow at negative x; each clip has to be moved by the scroll origin or
+/// both shots read somewhere else.
 const RTL_VECTOR_PAGE: &str = r##"<!DOCTYPE html>
 <html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>Right-to-left vector copy</title>
 <style>
@@ -88,12 +89,20 @@ const RTL_VECTOR_PAGE: &str = r##"<!DOCTYPE html>
   }
   .vector-panel svg { position: absolute; right: 0; top: 0; z-index: 0; display: block; width: 420px; height: 96px; }
   .vector-panel p { position: relative; z-index: 1; margin: 0; padding: 24px; width: 372px; font-size: 16px; line-height: 1.6; color: #fdfdfd; }
+  .overflow-row { width: 2400px; }
+  .overflow-row .vector-panel { margin-right: 1400px; }
 </style></head>
 <body>
   <div class="wide"></div>
   <div class="vector-panel">
     <svg viewBox="0 0 420 96" aria-hidden="true"><rect width="420" height="96" fill="#f5f2ea"/></svg>
     <p id="rtl-vector-copy">White text on pale vector artwork.</p>
+  </div>
+  <div class="overflow-row">
+    <div class="vector-panel">
+      <svg viewBox="0 0 420 96" aria-hidden="true"><rect width="420" height="96" fill="#f5f2ea"/></svg>
+      <p id="rtl-overflow-copy">White text on pale artwork past the left edge.</p>
+    </div>
   </div>
 </body></html>"##;
 
@@ -109,16 +118,15 @@ fn a_right_to_left_page_reads_pixels_where_the_text_paints() {
     let url = format!("http://127.0.0.1:{port}/");
     let options = ScanOptions { viewport: Some((1280, 800)), ..Default::default() };
     let findings = engine.detect_url(&url, &options).expect("scan");
-    let pixel: Vec<&str> = findings
-        .iter()
-        .filter(|f| {
-            f.antipattern == "low-contrast"
-                && f.extras.get("selector").and_then(|v| v.as_str()) == Some("#rtl-vector-copy")
-        })
-        .map(|f| f.snippet.as_str())
-        .collect();
-    assert!(
-        pixel.iter().any(|s| s.starts_with("pixel contrast ")),
-        "the copy on a right-to-left page was not measured where it paints: {pixel:?}"
-    );
+    for id in ["#rtl-vector-copy", "#rtl-overflow-copy"] {
+        let pixel: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.antipattern == "low-contrast" && f.extras.get("selector").and_then(|v| v.as_str()) == Some(id))
+            .map(|f| f.snippet.as_str())
+            .collect();
+        assert!(
+            pixel.iter().any(|s| s.starts_with("pixel contrast ")),
+            "{id} on a right-to-left page was not measured where it paints: {pixel:?}"
+        );
+    }
 }
