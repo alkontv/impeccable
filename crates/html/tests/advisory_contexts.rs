@@ -223,3 +223,16 @@ fn a_control_inside_a_marked_mockup_keeps_failing() {
     assert_eq!(severities(&f, "undersized-ui-text", "Ready"), ["advisory"], "{f:#?}");
     assert_eq!(severities(&f, "undersized-ui-text", "Try it"), ["warning"], "{f:#?}");
 }
+
+#[test]
+fn an_inline_rotate_is_read_with_the_scale() {
+    // A frame turned 2 degrees by the `rotate` property is not a picture; one
+    // turned 10 degrees and scaled down is.
+    let frame = "width: 320px; height: 240px; border: 1px solid #d0d7de; border-radius: 12px; scale: 0.78";
+    let f = scan(&format!(
+        "<div style=\"{frame}; rotate: 2deg\"><span style=\"font-size: 9px\">Nearly level</span></div>\
+         <div style=\"{frame}; rotate: 10deg\"><span style=\"font-size: 9px\">Turned card</span></div>"
+    ));
+    assert_eq!(severities(&f, "undersized-ui-text", "Nearly level"), ["warning"], "{f:#?}");
+    assert_eq!(severities(&f, "undersized-ui-text", "Turned card"), ["advisory"], "{f:#?}");
+}
