@@ -2674,6 +2674,32 @@ fn with_method(sample: Value, method: &str) -> Value {
     }
 }
 
+/// Whether background layer `index` is `none` or a gradient that paints the whole box:
+/// tiled in both directions, or sized to the box and not moved off it by a
+/// length offset. Shorter `background-*` lists repeat, as in CSS.
+fn gradient_layer_covers_box(dom: &dyn Dom, node: ElId, layers: &[String], index: usize) -> bool {
+    let layer = js::to_lower_case(js::trim(&layers[index]));
+    // The `none` a `background` shorthand leaves beside its color paints nothing.
+    if layer == "none" {
+        return true;
+    }
+    let is_gradient = ["linear-gradient(", "radial-gradient(", "conic-gradient("]
+        .iter()
+        .any(|kind| layer.starts_with(kind) || layer.strip_prefix("repeating-").is_some_and(|l| l.starts_with(kind)));
+    if !is_gradient {
+        return false;
+    }
+    let value = |prop: &str| {
+        let list = split_top_level_commas(&dom.style(node, prop));
+        list.get(index % list.len().max(1)).map(|v| js::trim(v).to_string()).unwrap_or_default()
+    };
+    if matches!(value("backgroundRepeat").as_str(), "" | "repeat" | "repeat repeat") {
+        return true;
+    }
+    matches!(value("backgroundSize").as_str(), "" | "auto" | "auto auto" | "cover" | "100% 100%")
+        && split_ws(&value("backgroundPosition")).iter().all(|t| t.ends_with('%') || matches!(&**t, "0px" | "left" | "top" | "center" | "right" | "bottom"))
+}
+
 /// JS: index.mjs#sampleCssBackground — every decision except the image
 /// load and the canvas sample.
 pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan {
@@ -2682,18 +2708,21 @@ pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan
         if GRADIENT_RE.is_match(&bg_image) {
             if let Some(tc) = text_color {
                 // Compared raw, `transparent` reads as black (issue #881). Over the
-                // element's own opaque background-color (no url() layer) the layers
-                // composite bottom up before they are judged.
-                let own = parse_rgb_or_any(&dom.style(node, "backgroundColor"))
-                    .filter(|c| c.alpha_or_one() >= 0.95 && !URL_RE.is_match(&bg_image));
+                // element's own opaque background-color the layers composite bottom
+                // up before they are judged, while every layer is a gradient that
+                // paints the whole box; anything else takes the path below.
+                let layers = split_top_level_commas(&bg_image);
+                let own = parse_rgb_or_any(&dom.style(node, "backgroundColor")).filter(|c| {
+                    c.alpha_or_one() >= 0.999 && (0..layers.len()).all(|i| gradient_layer_covers_box(dom, node, &layers, i))
+                });
                 // Set when a translucent stop lands on more than one color: which
                 // composite is painted then depends on where each of them sits.
                 let mut positional = false;
                 let colors: Option<Vec<Rgba>> = match own {
-                    Some(own) => split_top_level_commas(&bg_image).iter().rev().try_fold(vec![own], |ground, layer| {
+                    Some(own) => layers.iter().rev().try_fold(vec![own], |ground, layer| {
                         let stops = parse_gradient_colors(Some(layer));
                         if stops.is_empty() {
-                            return Some(ground);
+                            return (js::trim(layer) == "none").then_some(ground);
                         }
                         let mut over: Vec<Rgba> = Vec::new();
                         for stop in &stops {
@@ -2714,12 +2743,13 @@ pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan
                     };
                 };
                 if positional {
-                    if let Some(color) = pick_worst_contrast_color(tc, &colors) {
-                        // The other end of the range the stack can show:
-                        // `finish_analysis` keeps the sample only when both ends
-                        // agree on the verdict.
-                        let by_contrast = |a: &&Rgba, b: &&Rgba| contrast_ratio(tc, a).total_cmp(&contrast_ratio(tc, b));
-                        let best = colors.iter().max_by(by_contrast);
+                    // The two ends of the range the stack can show, ranked as
+                    // `finish_analysis` scores them (translucent text blended
+                    // over each): it keeps the sample only when both ends agree
+                    // on the verdict.
+                    let painted = |bg: &Rgba| contrast_ratio(&blend_rgba(Some(tc), Some(bg)).unwrap(), bg);
+                    let by_contrast = |a: &&Rgba, b: &&Rgba| painted(a).total_cmp(&painted(b));
+                    if let (Some(color), Some(best)) = (colors.iter().min_by(by_contrast), colors.iter().max_by(by_contrast)) {
                         return CssPlan::Sample {
                             sample: json!({ "status": "sampled", "color": color, "best": best, "method": "analytic-gradient" }),
                         };
@@ -3929,7 +3959,8 @@ mod tests {
         let sec = d.add(Some(body), "section");
         let radial = "radial-gradient(at 75% 42%, rgba(233, 231, 249, 0.72) 0px, rgba(0, 0, 0, 0) 58%)";
         let linear = "linear-gradient(rgb(242, 240, 250), rgba(0, 0, 0, 0) 75%)";
-        d.set_styles(sec, &[("backgroundImage", radial), ("backgroundColor", "rgb(255, 255, 255)")]);
+        // The `background` shorthand leaves a `none` layer beside its color.
+        d.set_styles(sec, &[("backgroundImage", &format!("{radial}, none")), ("backgroundColor", "rgb(255, 255, 255)")]);
         let text = rgba(24.0, 25.0, 28.0, 1.0);
         let sample = |d: &FakeDom| match css_plan(d, sec, Some(&text)) {
             CssPlan::Sample { sample } => sample,
@@ -3957,6 +3988,33 @@ mod tests {
         let stacked = sample(&d);
         assert_eq!(rgba_from_value(stacked.get("color")), Some(rgba(236.0, 234.0, 249.0, 1.0)));
         assert_eq!(rgba_from_value(stacked.get("best")), Some(rgba(255.0, 255.0, 255.0, 1.0)));
+        // Translucent text is ranked as it paints: red at 0.65 passes over white and
+        // fails over black, so black is the worst end even though raw red is darker
+        // against white.
+        let veil_over_split = "linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0)), linear-gradient(rgb(0, 0, 0), rgb(255, 255, 255))";
+        d.set_style(sec, "backgroundImage", veil_over_split);
+        let red = rgba(255.0, 0.0, 0.0, 0.65);
+        let ranked = match css_plan(&d, sec, Some(&red)) {
+            CssPlan::Sample { sample } => sample,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(rgba_from_value(ranked.get("color")), Some(rgba(0.0, 0.0, 0.0, 1.0)));
+        // Only a fully opaque fill is a ground: what is behind a 0.96 fill still shows.
+        d.set_styles(sec, &[("backgroundImage", radial), ("backgroundColor", "rgba(255, 255, 255, 0.96)")]);
+        assert!(unread(&d));
+        // A layer that is not a gradient (a paint worklet) is not read as absent.
+        d.set_styles(sec, &[("backgroundImage", &format!("{radial}, paint(dots)")), ("backgroundColor", "rgb(255, 255, 255)")]);
+        assert!(unread(&d));
+        // A small untiled gradient does not hide the layers outside it.
+        d.set_styles(sec, &[
+            ("backgroundImage", "linear-gradient(rgb(0, 0, 0), rgb(0, 0, 0)), linear-gradient(rgb(255, 255, 255), rgb(255, 255, 255))"),
+            ("backgroundSize", "40px 40px, auto"),
+            ("backgroundRepeat", "no-repeat, repeat"),
+        ]);
+        assert!(unread(&d));
+        // Tiled, the same gradient paints the whole box.
+        d.set_style(sec, "backgroundRepeat", "repeat");
+        assert_eq!(color(&d), Some(rgba(0.0, 0.0, 0.0, 1.0)));
     }
 
     #[test]
