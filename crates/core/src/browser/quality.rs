@@ -592,6 +592,17 @@ impl RenderedTextCount {
     /// run, while preserved and no-break spaces at the edges still render.
     /// An empty box (an image, an input) holds its place the same way: the
     /// white space beside it is not at an edge of the text.
+    /// Takes in a hard line break (`<br>`). The new line starts with no box
+    /// on it, so white space after the break is at the line's start again,
+    /// as it was before any box; and white space still held before the
+    /// first character is dropped with the line it was on.
+    fn line_break(&mut self) {
+        self.boxed = false;
+        if self.count == 0 {
+            self.pending = 0;
+        }
+    }
+
     fn add_atomic_inline(&mut self, inner: usize) {
         self.in_collapsible_run = false;
         if self.count > 0 || self.boxed {
@@ -642,6 +653,10 @@ fn feed_rendered_text(dom: &dyn Dom, el: ElId, out: &mut RenderedTextCount) {
             }
             DomChild::Element(child) => {
                 if renders_no_text(dom, child) {
+                    continue;
+                }
+                if tag_lower(dom, child) == "br" {
+                    out.line_break();
                     continue;
                 }
                 if is_atomic_inline(dom, child) {
@@ -5218,6 +5233,15 @@ mod rendered_text_tests {
             d.set_style(boxed, "display", display);
             d.add_text(r, " word ");
             assert_eq!(rendered_text_len(&d, r), " word".len(), "edges {tag}");
+
+            // A hard break after the box starts a new line, whose leading
+            // space is trimmed (review of #968).
+            let r = two_line_p(&mut d, body);
+            let boxed = d.add(Some(r), tag);
+            d.set_style(boxed, "display", display);
+            d.add(Some(r), "br");
+            d.add_text(r, " word");
+            assert_eq!(rendered_text_len(&d, r), "word".len(), "break {tag}");
         }
     }
 }

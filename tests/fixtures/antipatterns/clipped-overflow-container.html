@@ -218,6 +218,12 @@
         <button>Share</button>
         <dialog class="pop closed-dialog">A closed dialog renders nothing.</dialog>
       </div>
+      <!-- A modal dialog sits in the top layer, above the clip. -->
+      <div class="box pass-modal-dialog" style="overflow: hidden">
+        <button>Share</button>
+        <dialog class="pop modal-dialog" id="modal-dialog" style="margin: 0; border: 0">A modal dialog escapes every clip.</dialog>
+        <script>document.getElementById('modal-dialog').showModal();</script>
+      </div>
       <div class="box pass-unnamed-dropdown" style="overflow: hidden">
         <button>Sort</button>
         <div class="pop dropdown-panel">A dropdown named only by its class keeps its silence.</div>

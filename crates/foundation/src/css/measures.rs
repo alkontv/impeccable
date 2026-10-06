@@ -720,7 +720,8 @@ fn split_shadow_layers(s: &str) -> Vec<&str> {
 /// variables compute to `rgba(0, 0, 0, 0) 0px 0px 0px 0px` layers, and a
 /// fully zero layer paints nothing even in an opaque color. Nor does an
 /// unblurred layer whose negative spread pulls its shape in at least as far
-/// as its offsets move it: outside, that shape stays under the box; inset,
+/// as its offset moves it, measured as a distance so a rounded corner moved
+/// diagonally still counts: outside, that shape stays under the box; inset,
 /// the hole it cuts covers the whole box (`0 0 0 -1px`).
 pub fn box_shadow_paints(box_shadow: &str) -> bool {
     re!(WORD_RE, r"(?-u:\b)[a-zA-Z]+(?-u:\b)");
@@ -740,7 +741,7 @@ pub fn box_shadow_paints(box_shadow: &str) -> bool {
             return false;
         }
         match nums.as_slice() {
-            [x, y, blur, spread, ..] if *blur == 0.0 && math_max(x.abs(), y.abs()) + spread <= 0.0 => false,
+            [x, y, blur, spread, ..] if *blur == 0.0 && x.hypot(*y) + spread <= 0.0 => false,
             _ => true,
         }
     })
@@ -1337,7 +1338,10 @@ mod tests {
         // under the box, or cuts a hole over all of it when inset.
         assert!(!box_shadow_paints("rgb(0, 0, 0) 0px 0px 0px -1px"));
         assert!(!box_shadow_paints("rgb(0, 0, 0) 0px 0px 0px -4px inset"));
-        assert!(!box_shadow_paints("rgb(0, 0, 0) 2px -3px 0px -3px"));
+        assert!(!box_shadow_paints("rgb(0, 0, 0) 2px -2px 0px -3px"));
+        // A 4px diagonal move under a 4px pull still shows past a rounded
+        // corner (review of #968): the offset is read as a distance.
+        assert!(box_shadow_paints("rgb(0, 0, 0) 4px 4px 0px -4px"));
         assert!(box_shadow_paints("rgb(0, 0, 0) 0px 4px 0px -3px"), "offset past the spread");
         assert!(box_shadow_paints("rgb(0, 0, 0) 0px 0px 6px -2px"), "a blur reaches out");
     }

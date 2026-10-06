@@ -2265,8 +2265,7 @@ fn closed_controlled_ids(dom: &dyn Dom) -> std::collections::HashSet<String> {
 /// - the box or an ancestor is `inert`;
 /// - the box or an ancestor is named by an `aria-controls` trigger that says
 ///   `aria-expanded="false"` or `aria-selected="false"` (`closed_ids`);
-/// - the box itself carries a role in [`CLOSED_PANEL_ROLES`], unless it is a
-///   tab panel its tab marks selected ([`tab_panel_marked_open`]);
+/// - the box itself carries a role in [`CLOSED_PANEL_ROLES`];
 /// - the box itself carries a class token [`closed_container_class`] knows;
 /// - the box itself follows its trigger: the element before it, or that
 ///   element's first child (a heading wrapping a button), says
@@ -2275,21 +2274,27 @@ fn closed_controlled_ids(dom: &dyn Dom) -> std::collections::HashSet<String> {
 /// - the box itself is a drawer parked beside the page: `position: fixed`
 ///   and wholly left or right of the viewport.
 ///
+/// A tab panel (by role or by a tab class) that its tab marks selected
+/// ([`tab_panel_marked_open`]) is none of these: it is the panel a visitor
+/// was meant to see.
+///
 /// A box none of these describe is base behaviour: its text counts as hidden.
 fn closed_container(dom: &dyn Dom, el: ElId, closed_ids: &std::collections::HashSet<String>) -> bool {
     let role = |e: ElId| dom.attr(e, "role").map(|r| js::to_lower_case(js::trim(&r))).unwrap_or_default();
     let own_role = role(el);
+    let class = dom.attr(el, "class").unwrap_or_default();
     // A tab panel its own tab marks selected is the panel a visitor is meant
-    // to see: hidden, its reveal failed, and it is content like any other.
-    if CLOSED_PANEL_ROLES.contains(&own_role.as_str()) && !(own_role == "tabpanel" && tab_panel_marked_open(dom, el)) {
+    // to see: hidden, its reveal failed, and it is content like any other,
+    // whether the role or a class (`tab-pane`) names it a panel.
+    let tab_like = own_role == "tabpanel"
+        || class.split_whitespace().any(|t| class_words(t).iter().any(|w| matches!(w.as_str(), "tab" | "tabs" | "tabpanel" | "tabpane")));
+    if tab_like && tab_panel_marked_open(dom, el) {
+        return false;
+    }
+    if CLOSED_PANEL_ROLES.contains(&own_role.as_str()) {
         return true;
     }
-    if dom
-        .attr(el, "class")
-        .unwrap_or_default()
-        .split_whitespace()
-        .any(closed_container_class)
-    {
+    if class.split_whitespace().any(closed_container_class) {
         return true;
     }
     let collapsed = |e: ElId| {
@@ -4589,6 +4594,41 @@ mod tests {
     /// or never looked at, still counts. A slider with every slide hidden
     /// leaves both counts and is reported apart; a slider showing its current
     /// slide is a page, and its other slides count as before.
+    /// review of #968: a selected panel named by its role and a tab class
+    /// (Bootstrap's `tab-pane`) is content when it stays hidden, by either
+    /// way of marking it selected; an unselected one is closed interface.
+    #[test]
+    fn a_selected_tab_pane_is_content_when_hidden() {
+        let text = |c: &str, n: usize| c.repeat(n);
+        for by_labelledby in [false, true] {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            hidden_box(&mut d, body, "p", &[], &text("v", 100));
+            let tab = hidden_box(&mut d, body, "button", &[], "Plans");
+            d.set_attr(tab, "id", "tab-plans");
+            d.set_attr(tab, "aria-selected", "true");
+            d.add_selector(tab, "[aria-selected]");
+            if !by_labelledby {
+                d.set_attr(tab, "aria-controls", "panel-plans");
+                d.add_selector(tab, "[aria-controls]");
+            }
+            let pane = hidden_box(&mut d, body, "div", VIS_HIDDEN, &text("s", 40));
+            d.set_attr(pane, "role", "tabpanel");
+            d.set_attr(pane, "class", "tab-pane fade");
+            d.set_attr(pane, "id", "panel-plans");
+            if by_labelledby {
+                d.set_attr(pane, "aria-labelledby", "tab-plans");
+            }
+            let other = hidden_box(&mut d, body, "div", VIS_HIDDEN, &text("u", 40));
+            d.set_attr(other, "role", "tabpanel");
+            d.set_attr(other, "class", "tab-pane fade");
+            d.set_attr(other, "id", "panel-other");
+            mark_body_descendants(&mut d);
+            let m = measure_hidden_text_dom(&d);
+            assert_eq!((m.total_chars, m.hidden_chars), (145.0, 40.0), "labelledby: {by_labelledby}");
+        }
+    }
+
     #[test]
     fn an_image_carousel_that_started_counts_its_hidden_captions() {
         let text = |c: &str, n: usize| c.repeat(n);

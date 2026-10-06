@@ -79,6 +79,7 @@ fn pass_column_containers_are_not_reported() {
         "pass-masthead-curve",
         "pass-unnamed-dropdown",
         "pass-closed-dialog",
+        "pass-modal-dialog",
         // The shell around two nested clips: the nearer clip owns each layer.
         "nested-outer-clip",
     ] {

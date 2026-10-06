@@ -181,7 +181,7 @@ fn clipped_overflow_reads_track_words_past_bem_and_camel_case() {
         &findings,
         "clipped-overflow-container",
         &["flag-bem-tooltip", "flag-overflow-hidden", "flag-native-dialog"],
-        &["pass-bem-marquee", "hotStuffBox", "pass-camel-host", "pass-nested-deck", "pass-closed-dialog"],
+        &["pass-bem-marquee", "hotStuffBox", "pass-camel-host", "pass-nested-deck", "pass-closed-dialog", "pass-modal-dialog"],
     );
 }
 
