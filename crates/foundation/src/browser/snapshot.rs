@@ -62,6 +62,10 @@ pub const NS_MATHML: &str = "http://www.w3.org/1998/Math/MathML";
 /// sync with `STYLE_PROPS` in `browser-bundle/15-snapshot.js` (the build
 /// checks the two lists agree).
 pub const STYLE_PROPS: &[&str] = &[
+    "animationDelay",
+    "animationDirection",
+    "animationDuration",
+    "animationFillMode",
     "animationIterationCount",
     "animationName",
     "animationTimeline",
@@ -1352,6 +1356,18 @@ mod tests {
                 "aspectRatio".to_string()
             ]
         );
+    }
+
+    /// The fill mode, direction, duration and delay of animations joined the
+    /// capture later: a recording without them reads each as empty, which
+    /// the rules that end an animation take as unknown.
+    #[test]
+    fn older_capture_without_animation_timing_props() {
+        let d = snap(SMALL);
+        for prop in ["animationFillMode", "animationDirection", "animationDuration", "animationDelay"] {
+            assert!(STYLE_PROPS.contains(&prop), "{prop} missing from STYLE_PROPS");
+            assert_eq!(d.style(5, prop), "", "{prop}");
+        }
     }
 
     /// The containing-block properties and `scrollHeight` joined the capture

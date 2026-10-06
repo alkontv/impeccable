@@ -82,6 +82,10 @@ pub enum Unpainted {
     /// The element or an ancestor is a face turned away from the viewer under
     /// `backface-visibility: hidden`: the back of a flip card at rest.
     TurnedAway,
+    /// The element or an ancestor runs a one-shot animation that leaves it at
+    /// opacity 0 and holds that frame ([`fades_out_for_good`]): the outgoing
+    /// half of a swap, caught before it faded.
+    FadesOut,
 }
 
 /// Which predicate a rule's findings pass through.
@@ -406,6 +410,11 @@ fn unpainted_walk(
                 return Some(Unpainted::StateLayer);
             }
         }
+    }
+    // Only the element's own fade counts where its own opacity does; the
+    // others ask its ancestors alone, as the opacity tests above do.
+    if fades_out_in_chain(dom, el, own == OwnOpacity::Counts) {
+        return Some(Unpainted::FadesOut);
     }
 
     let rect = dom.rect(el);
@@ -1043,6 +1052,11 @@ fn is_state_layer(dom: &dyn Dom, el: ElId) -> bool {
     {
         return true;
     }
+    // The poster a video plays over needs no transition: the player hides
+    // it the moment the video has a frame, and the video is what shows.
+    if effective_opacity_dom(dom, el) <= TRANSPARENT_FLOOR && poster_under_video(dom, el) {
+        return true;
+    }
     if !declares_opacity_transition(dom, el) || effective_opacity_dom(dom, el) > TRANSPARENT_FLOOR {
         return false;
     }
@@ -1056,6 +1070,218 @@ fn is_state_layer(dom: &dyn Dom, el: ElId) -> bool {
 fn opacity_in_motion(dom: &dyn Dom, el: ElId) -> bool {
     dom.running_animation_properties(el)
         .is_some_and(|props| props.iter().any(|p| p == "opacity"))
+}
+
+/// The longest a one-shot animation may run, delay included, for the frame
+/// it ends on to be the state a visitor meets: maritime.sh's URL bar swaps
+/// hosts four seconds into a ten-second demo.
+const ANIMATION_END_MAX_SECONDS: f64 = 60.0;
+
+/// One entry of an element's `animation-*` lists: the lists pair with
+/// `animation-name` by position, repeating when shorter.
+struct AnimationEntry {
+    name: String,
+    iterations: String,
+    fill: String,
+    direction: String,
+    duration: String,
+    delay: String,
+    timeline: String,
+}
+
+/// The entries of the element's `animation-*` lists, one per name other
+/// than `none`. A list the capture did not record (a recording made before
+/// it read `animation-fill-mode`, `animation-direction`,
+/// `animation-duration` and `animation-delay`) reads empty, and every test
+/// on it answers no.
+fn animation_entries(dom: &dyn Dom, el: ElId) -> Vec<AnimationEntry> {
+    let names = dom.style(el, "animationName");
+    if js::trim(&names).is_empty() || js::trim(&names) == "none" {
+        return Vec::new();
+    }
+    let list = |prop: &str| -> Vec<String> {
+        dom.style(el, prop).split(',').map(|v| js::to_lower_case(js::trim(v))).collect()
+    };
+    let at = |v: &[String], i: usize| -> String {
+        if v.is_empty() {
+            String::new()
+        } else {
+            v[i % v.len()].clone()
+        }
+    };
+    let (iterations, fill, direction) = (list("animationIterationCount"), list("animationFillMode"), list("animationDirection"));
+    let (duration, delay, timeline) = (list("animationDuration"), list("animationDelay"), list("animationTimeline"));
+    names
+        .split(',')
+        .map(js::trim)
+        .enumerate()
+        .filter(|(_, name)| !name.is_empty() && *name != "none")
+        .map(|(i, name)| AnimationEntry {
+            name: name.to_string(),
+            iterations: at(&iterations, i),
+            fill: at(&fill, i),
+            direction: at(&direction, i),
+            duration: at(&duration, i),
+            delay: at(&delay, i),
+            timeline: at(&timeline, i),
+        })
+        .collect()
+}
+
+/// The opacity a keyframe sets, `None` where it sets none or it does not
+/// read as a number.
+fn frame_opacity(frame: &super::dom::KeyframeFrame) -> Option<f64> {
+    frame
+        .decls
+        .iter()
+        .rev()
+        .find(|(p, _)| p == "opacity")
+        .map(|(_, v)| {
+            let v = js::trim(v);
+            match v.strip_suffix('%') {
+                Some(pct) => js::parse_float(pct) / 100.0,
+                None => js::parse_float(v),
+            }
+        })
+        .filter(|v| v.is_finite())
+}
+
+/// The opacity a finite animation holds once it has played, where it holds
+/// one: `animation-fill-mode` is `forwards` or `both`, the iteration count is
+/// a whole number, the run (delay plus every iteration) ends within
+/// [`ANIMATION_END_MAX_SECONDS`] on the document timeline, and the keyframe
+/// the direction ends on sets `opacity`. Keyframes are read in the order the
+/// stylesheet lists them, the last as the end (`normal`) and the first as
+/// the start, which is how `@keyframes` are written. `None` for anything
+/// else: an unrecorded list, an infinite or fractional count, a scroll-driven
+/// timeline, a fill mode that hands the box back to its own style.
+fn held_end_opacity(dom: &dyn Dom, entry: &AnimationEntry) -> Option<f64> {
+    if !matches!(entry.fill.as_str(), "forwards" | "both") {
+        return None;
+    }
+    if !(entry.timeline.is_empty() || entry.timeline == "auto") {
+        return None;
+    }
+    let count = js::parse_float(&entry.iterations);
+    if !(count.is_finite() && count >= 1.0 && count.fract() == 0.0) {
+        return None;
+    }
+    let (duration, delay) = (css_time(&entry.duration)?, css_time(&entry.delay)?);
+    if !(duration > 0.0 && delay.max(0.0) + duration * count <= ANIMATION_END_MAX_SECONDS) {
+        return None;
+    }
+    let odd = count % 2.0 == 1.0;
+    let ends_on_last = match entry.direction.as_str() {
+        "normal" => true,
+        "reverse" => false,
+        "alternate" => odd,
+        "alternate-reverse" => !odd,
+        _ => return None,
+    };
+    let frames = dom.keyframes(&entry.name)?;
+    let frame = if ends_on_last { frames.last() } else { frames.first() }?;
+    frame_opacity(frame)
+}
+
+/// A CSS `<time>` in seconds, `None` where it does not read.
+fn css_time(value: &str) -> Option<f64> {
+    let v = js::trim(value);
+    let n = if let Some(ms) = v.strip_suffix("ms") {
+        js::parse_float(ms) / 1000.0
+    } else if let Some(s) = v.strip_suffix('s') {
+        js::parse_float(s)
+    } else {
+        return None;
+    };
+    n.is_finite().then_some(n)
+}
+
+/// Whether an animation running on `el` at capture leaves it hidden for
+/// good: a one-shot fade that ends at opacity 0 and holds that frame
+/// (`forwards`), such as the outgoing half of maritime.sh's URL swap
+/// (`ds-url-old 10s linear forwards`, opacity 1 until 35% and 0 after). A
+/// capture taken in the first seconds reads opacity 1, which is a frame no
+/// visitor is left with. The capture has to have seen an animation moving
+/// the box's `opacity`; a recording made before the capture read the fill
+/// mode, direction, duration and delay answers no ([`held_end_opacity`]).
+pub(crate) fn fades_out_for_good(dom: &dyn Dom, el: ElId) -> bool {
+    if !opacity_in_motion(dom, el) {
+        return false;
+    }
+    animation_entries(dom, el)
+        .iter()
+        .any(|entry| held_end_opacity(dom, entry).is_some_and(|o| o <= TRANSPARENT_FLOOR))
+}
+
+/// Whether an animation running on `el` at capture shows it: a loop whose
+/// keyframes take its `opacity` above the transparent floor, or a one-shot
+/// fade that ends above it and holds that frame. A box caught at 0 in the
+/// first frames of a timed fade-in, or in the off phase of a loop, is
+/// content a visitor reads. Scroll-driven timelines are
+/// [`opacity_held_by_scroll_timeline`]'s; a recording that did not see the
+/// animation running answers no.
+pub(crate) fn opacity_animation_shows(dom: &dyn Dom, el: ElId) -> bool {
+    if !opacity_in_motion(dom, el) {
+        return false;
+    }
+    animation_entries(dom, el).iter().any(|entry| {
+        if !(entry.timeline.is_empty() || entry.timeline == "auto") {
+            return false;
+        }
+        if entry.iterations == "infinite" {
+            return dom.keyframes(&entry.name).is_some_and(|frames| {
+                frames.iter().filter_map(frame_opacity).any(|o| o > TRANSPARENT_FLOOR)
+            });
+        }
+        held_end_opacity(dom, entry).is_some_and(|o| o > TRANSPARENT_FLOOR)
+    })
+}
+
+/// The opacity at or under which a loop's keyframe makes the box vanish.
+const LOOP_VANISH_OPACITY: f64 = 0.1;
+
+/// Whether a loop running on `el` at capture takes it out of sight every
+/// cycle: an `animation-name` paired with an `infinite` iteration count whose
+/// keyframes set `opacity` at or under [`LOOP_VANISH_OPACITY`], and the
+/// capture saw an animation moving the box's `opacity`. The frame the capture
+/// read and the frame a later screenshot shows are different phases of it. A
+/// loop that only breathes (0.7 to 1), one that moves a transform or a shadow
+/// alone (a marquee, a floating card), a box whose keyframes the capture could
+/// not read, and a recording that did not read running animations answer no.
+pub(crate) fn loops_in_motion(dom: &dyn Dom, el: ElId) -> bool {
+    let names = dom.style(el, "animationName");
+    if js::trim(&names).is_empty() || js::trim(&names) == "none" {
+        return false;
+    }
+    if !opacity_in_motion(dom, el) {
+        return false;
+    }
+    animation_entries(dom, el).iter().any(|entry| {
+        entry.iterations == "infinite"
+            && dom
+                .keyframes(&entry.name)
+                .is_some_and(|frames| frames.iter().filter_map(frame_opacity).any(|o| o <= LOOP_VANISH_OPACITY))
+    })
+}
+
+/// Whether `el` (when `include_self`) or an ancestor fades out for good
+/// ([`fades_out_for_good`]). Only boxes that name an animation are asked
+/// about what runs on them.
+fn fades_out_in_chain(dom: &dyn Dom, el: ElId, include_self: bool) -> bool {
+    const MAX_ANCESTORS: usize = 64;
+    let mut cur = if include_self { Some(el) } else { dom.parent(el) };
+    for _ in 0..MAX_ANCESTORS {
+        let Some(c) = cur else { return false };
+        if Some(c) == dom.body() || Some(c) == dom.document_element() {
+            return false;
+        }
+        let names = dom.style(c, "animationName");
+        if !js::trim(&names).is_empty() && js::trim(&names) != "none" && fades_out_for_good(dom, c) {
+            return true;
+        }
+        cur = dom.parent(c);
+    }
+    false
 }
 
 /// Whether `el`, a box at an opacity of 0, is held there by a scroll-driven
@@ -1250,7 +1476,7 @@ fn declares_opacity_transition(dom: &dyn Dom, el: ElId) -> bool {
 
 /// `transition-property` / `transition-duration` pair `property` or `all`
 /// with a non-zero duration (the lists repeat to the longer one).
-fn declares_transition_of(dom: &dyn Dom, el: ElId, property: &str) -> bool {
+pub(crate) fn declares_transition_of(dom: &dyn Dom, el: ElId, property: &str) -> bool {
     let props = dom.style(el, "transitionProperty");
     let durations = dom.style(el, "transitionDuration");
     let props: Vec<&str> = props.split(',').map(js::trim).collect();
@@ -1502,6 +1728,19 @@ const LAYER_SEARCH_DEPTH: usize = 3;
 /// covering most of the element's box: the other layers of a crossfade, or
 /// the video a poster sits over.
 fn in_crossfade_stack(dom: &dyn Dom, el: ElId) -> bool {
+    stacked_with(dom, el, false)
+}
+
+/// A `<video>` parent, or a sibling that is (or holds) a `<video>` covering
+/// most of the element's box: the poster frame of a player (hse.de's live
+/// preview, whose `<img>` sits at opacity 0 beside the playing video). A
+/// raster sibling alone is not enough here, since an image held buried over
+/// another image is what `buried-raster` reports.
+fn poster_under_video(dom: &dyn Dom, el: ElId) -> bool {
+    stacked_with(dom, el, true)
+}
+
+fn stacked_with(dom: &dyn Dom, el: ElId, video_only: bool) -> bool {
     let Some(parent) = dom.parent(el) else {
         return false;
     };
@@ -1512,20 +1751,24 @@ fn in_crossfade_stack(dom: &dyn Dom, el: ElId) -> bool {
     dom.children(parent)
         .into_iter()
         .filter(|sibling| *sibling != el)
-        .any(|sibling| holds_layer_over(dom, sibling, &rect, LAYER_SEARCH_DEPTH))
+        .any(|sibling| holds_layer_over(dom, sibling, &rect, LAYER_SEARCH_DEPTH, video_only))
 }
 
-fn holds_layer_over(dom: &dyn Dom, node: ElId, target: &Rect, depth: usize) -> bool {
+fn holds_layer_over(dom: &dyn Dom, node: ElId, target: &Rect, depth: usize, video_only: bool) -> bool {
     let tag = tag_lower(dom, node);
-    let raster = MEDIA_TAGS.contains(&tag.as_str()) || dom.style(node, "backgroundImage").contains("url(");
-    if raster && covers_most_of(&dom.rect(node), target) {
+    let layer = if video_only {
+        tag == "video"
+    } else {
+        MEDIA_TAGS.contains(&tag.as_str()) || dom.style(node, "backgroundImage").contains("url(")
+    };
+    if layer && covers_most_of(&dom.rect(node), target) {
         return true;
     }
     depth > 0
         && dom
             .children(node)
             .into_iter()
-            .any(|child| holds_layer_over(dom, child, target, depth - 1))
+            .any(|child| holds_layer_over(dom, child, target, depth - 1, video_only))
 }
 
 /// Whether `layer` overlaps at least half of `target`'s area.
@@ -3271,5 +3514,178 @@ mod tests {
         let host = d.add(Some(body), "div");
         d.set_rect(host, 40.0, 200.0, 0.0, 0.0);
         assert!(page_form_painted(&d, "pulsing-dot", &[host]));
+    }
+
+    fn frames(values: &[&[(&str, &str)]]) -> Vec<crate::browser::dom::KeyframeFrame> {
+        values
+            .iter()
+            .map(|decls| crate::browser::dom::KeyframeFrame {
+                decls: decls.iter().map(|(p, v)| (p.to_string(), v.to_string())).collect(),
+            })
+            .collect()
+    }
+
+    /// The computed `animation-*` lists of a one-shot run, as a capture that
+    /// records the fill mode, direction, duration and delay reads them.
+    fn one_shot(d: &mut FakeDom, el: ElId, name: &str, fill: &str) {
+        d.set_styles(
+            el,
+            &[
+                ("animationName", name),
+                ("animationIterationCount", "1"),
+                ("animationFillMode", fill),
+                ("animationDirection", "normal"),
+                ("animationDuration", "10s"),
+                ("animationDelay", "0s"),
+                ("animationTimeline", "auto"),
+            ],
+        );
+        d.set_running_animations(el, &["opacity"]);
+    }
+
+    /// maritime.sh (285091, 285346): the outgoing host of a URL swap,
+    /// `ds-url-old 10s linear forwards`, read at opacity 1 in its first
+    /// seconds and held at 0 after.
+    #[test]
+    fn a_one_shot_fade_out_that_holds_its_end_is_not_painted() {
+        let (mut d, body) = page();
+        let bar = d.add(Some(body), "div");
+        d.set_rect(bar, 40.0, 200.0, 300.0, 20.0);
+        let old = d.add(Some(bar), "span");
+        d.set_styles(old, &[("fontSize", "10.5px"), ("opacity", "1"), ("position", "absolute")]);
+        d.set_rect(old, 40.0, 200.0, 174.0, 20.0);
+        d.add_text(old, "mail.google.com");
+        d.keyframes.insert("ds-url-old".into(), frames(&[&[("opacity", "1")], &[("opacity", "0")]]));
+        d.keyframes.insert("ds-url-new".into(), frames(&[&[("opacity", "0")], &[("opacity", "1")]]));
+        one_shot(&mut d, old, "ds-url-old", "forwards");
+        assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
+        d.set_style(old, "animationFillMode", "both");
+        assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
+
+        // The fade carries what is inside the box with it.
+        let inner = d.add(Some(old), "b");
+        d.set_style(inner, "fontSize", "10.5px");
+        d.set_rect(inner, 40.0, 200.0, 40.0, 20.0);
+        d.add_text(inner, "mail");
+        assert_eq!(text(&d, inner), Some(Unpainted::FadesOut));
+        // The raster rule asks its ancestors alone.
+        assert_eq!(raster(&d, old), None);
+
+        // Each of these leaves the box shown, or says nothing it can hold.
+        let cases: &[(&str, &str)] = &[
+            ("animationFillMode", "none"),
+            ("animationFillMode", "backwards"),
+            ("animationDirection", "reverse"),
+            ("animationIterationCount", "infinite"),
+            ("animationIterationCount", "1.5"),
+            ("animationDuration", "120s"),
+            ("animationTimeline", "view()"),
+            ("animationName", "ds-url-new"),
+            ("animationName", "unknown-keyframes"),
+        ];
+        for (prop, value) in cases {
+            one_shot(&mut d, old, "ds-url-old", "forwards");
+            d.set_style(old, prop, value);
+            assert_eq!(text(&d, old), None, "{prop}: {value}");
+        }
+        // Two alternating runs end where they started; three end at 0.
+        one_shot(&mut d, old, "ds-url-old", "forwards");
+        d.set_styles(old, &[("animationDirection", "alternate"), ("animationIterationCount", "2"), ("animationDuration", "4s")]);
+        assert_eq!(text(&d, old), None);
+        d.set_style(old, "animationIterationCount", "3");
+        assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
+
+        // Paired by position: the second name takes the second fill mode.
+        one_shot(&mut d, old, "ds-url-new, ds-url-old", "none, forwards");
+        assert_eq!(text(&d, old), Some(Unpainted::FadesOut));
+        d.set_style(old, "animationFillMode", "forwards, none");
+        assert_eq!(text(&d, old), None);
+
+        // A capture that saw nothing running, and a recording made before
+        // the fill mode, direction, duration and delay were read, keep base
+        // behaviour.
+        one_shot(&mut d, old, "ds-url-old", "forwards");
+        d.el_mut(old).running_animations = Some(Vec::new());
+        assert_eq!(text(&d, old), None);
+        d.el_mut(old).running_animations = None;
+        assert_eq!(text(&d, old), None);
+        one_shot(&mut d, old, "ds-url-old", "forwards");
+        for prop in ["animationFillMode", "animationDirection", "animationDuration", "animationDelay"] {
+            one_shot(&mut d, old, "ds-url-old", "forwards");
+            d.set_style(old, prop, "");
+            assert_eq!(text(&d, old), None, "{prop} unrecorded");
+        }
+    }
+
+    /// hse.de (287819): the poster of a live preview at opacity 0 with no
+    /// transition, beside the wrapper of the `<video>` that plays over it.
+    #[test]
+    fn a_poster_beside_a_playing_video_needs_no_transition() {
+        let (mut d, body) = page();
+        let card = d.add(Some(body), "div");
+        d.set_style(card, "position", "relative");
+        d.set_rect(card, 15.0, 3551.0, 312.0, 390.0);
+        let wrap = d.add(Some(card), "div");
+        d.set_style(wrap, "position", "absolute");
+        d.set_rect(wrap, 15.0, 3551.0, 312.0, 390.0);
+        let video = d.add(Some(wrap), "video");
+        d.set_rect(video, 14.0, 3431.0, 312.0, 553.0);
+        let poster = d.add(Some(card), "img");
+        d.set_styles(poster, &[("opacity", "0"), ("transitionProperty", "all"), ("transitionDuration", "0s")]);
+        d.set_rect(poster, 15.0, 3551.0, 312.0, 390.0);
+        assert_eq!(raster(&d, poster), Some(Unpainted::StateLayer));
+
+        // Held faint rather than at 0, it is an image held buried.
+        d.set_style(poster, "opacity", "0.05");
+        assert_eq!(raster(&d, poster), None);
+        d.set_style(poster, "opacity", "0");
+
+        // An image instead of the video, with no transition: still reported.
+        let stack = d.add(Some(body), "div");
+        d.set_rect(stack, 15.0, 100.0, 312.0, 390.0);
+        let photo_wrap = d.add(Some(stack), "div");
+        d.set_rect(photo_wrap, 15.0, 100.0, 312.0, 390.0);
+        let photo = d.add(Some(photo_wrap), "img");
+        d.set_rect(photo, 15.0, 100.0, 312.0, 390.0);
+        let buried = d.add(Some(stack), "img");
+        d.set_styles(buried, &[("opacity", "0"), ("transitionProperty", "all"), ("transitionDuration", "0s")]);
+        d.set_rect(buried, 15.0, 100.0, 312.0, 390.0);
+        assert_eq!(raster(&d, buried), None);
+
+        // The video moved off the poster's box: reported.
+        d.set_rect(wrap, 15.0, 1200.0, 312.0, 390.0);
+        d.set_rect(video, 15.0, 1200.0, 312.0, 390.0);
+        assert_eq!(raster(&d, poster), None);
+    }
+
+    /// ascenix.co (286171 to 286173): a hero note that grows from
+    /// `scale(0.22)` at opacity 0 and back, forever.
+    #[test]
+    fn a_loop_through_nothing_is_in_motion_and_a_breath_is_not() {
+        let (mut d, body) = page();
+        let note = d.add(Some(body), "li");
+        d.set_styles(note, &[("opacity", "1"), ("animationName", "orb-note"), ("animationIterationCount", "infinite")]);
+        d.set_running_animations(note, &["opacity", "box-shadow", "transform"]);
+        d.keyframes.insert(
+            "orb-note".into(),
+            frames(&[&[("transform", "scale(.6)"), ("opacity", "0")], &[("opacity", "1")], &[("opacity", "0")]]),
+        );
+        assert!(loops_in_motion(&d, note));
+        // A recording that read no running animations, or saw none moving
+        // opacity, says nothing.
+        d.el_mut(note).running_animations = None;
+        assert!(!loops_in_motion(&d, note));
+        d.set_running_animations(note, &["transform"]);
+        assert!(!loops_in_motion(&d, note));
+        d.set_running_animations(note, &["opacity"]);
+        // One run, and a loop that only breathes, are not.
+        d.set_style(note, "animationIterationCount", "1");
+        assert!(!loops_in_motion(&d, note));
+        d.set_style(note, "animationIterationCount", "infinite");
+        d.keyframes.insert("orb-note".into(), frames(&[&[("opacity", "0.7")], &[("opacity", "1")]]));
+        assert!(!loops_in_motion(&d, note));
+        // A marquee moves only its transform.
+        d.keyframes.insert("orb-note".into(), frames(&[&[("transform", "translateX(0)")], &[("transform", "translateX(-50%)")]]));
+        assert!(!loops_in_motion(&d, note));
     }
 }
