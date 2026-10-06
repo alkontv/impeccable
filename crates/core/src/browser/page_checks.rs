@@ -2183,6 +2183,33 @@ fn closed_container_class(token: &str) -> bool {
     panel && (has("tab") || has("tabs") || has("accordion"))
 }
 
+/// Whether a trigger marks the tab panel `el` open: an element whose
+/// `aria-controls` names its id says `aria-selected="true"` or
+/// `aria-expanded="true"`, or the tab its `aria-labelledby` names says
+/// `aria-selected="true"`.
+fn tab_panel_marked_open(dom: &dyn Dom, el: ElId) -> bool {
+    let says_true = |e: ElId, name: &str| {
+        dom.attr(e, name).map(|v| js::to_lower_case(js::trim(&v))).as_deref() == Some("true")
+    };
+    if let Some(id) = dom.attr(el, "id").map(|id| js::trim(&id).to_string()).filter(|id| !id.is_empty()) {
+        let opens = dom.query_all(None, "[aria-controls]").unwrap_or_default().into_iter().any(|t| {
+            dom.attr(t, "aria-controls").is_some_and(|ids| ids.split_whitespace().any(|i| i == id))
+                && (says_true(t, "aria-selected") || says_true(t, "aria-expanded"))
+        });
+        if opens {
+            return true;
+        }
+    }
+    let labels = dom.attr(el, "aria-labelledby").unwrap_or_default();
+    if labels.trim().is_empty() {
+        return false;
+    }
+    dom.query_all(None, "[aria-selected]").unwrap_or_default().into_iter().any(|t| {
+        says_true(t, "aria-selected")
+            && dom.attr(t, "id").is_some_and(|tid| labels.split_whitespace().any(|l| l == tid))
+    })
+}
+
 /// The ids whose controlling triggers all say closed: every element whose
 /// `aria-controls` names the id carries `aria-expanded="false"` or
 /// `aria-selected="false"`, and none says `true`.
@@ -2218,7 +2245,8 @@ fn closed_controlled_ids(dom: &dyn Dom) -> std::collections::HashSet<String> {
 /// - the box or an ancestor is `inert`;
 /// - the box or an ancestor is named by an `aria-controls` trigger that says
 ///   `aria-expanded="false"` or `aria-selected="false"` (`closed_ids`);
-/// - the box itself carries a role in [`CLOSED_PANEL_ROLES`];
+/// - the box itself carries a role in [`CLOSED_PANEL_ROLES`], unless it is a
+///   tab panel its tab marks selected ([`tab_panel_marked_open`]);
 /// - the box itself carries a class token [`closed_container_class`] knows;
 /// - the box itself follows its trigger: the element before it, or that
 ///   element's first child (a heading wrapping a button), says
@@ -2231,7 +2259,9 @@ fn closed_controlled_ids(dom: &dyn Dom) -> std::collections::HashSet<String> {
 fn closed_container(dom: &dyn Dom, el: ElId, closed_ids: &std::collections::HashSet<String>) -> bool {
     let role = |e: ElId| dom.attr(e, "role").map(|r| js::to_lower_case(js::trim(&r))).unwrap_or_default();
     let own_role = role(el);
-    if CLOSED_PANEL_ROLES.contains(&own_role.as_str()) {
+    // A tab panel its own tab marks selected is the panel a visitor is meant
+    // to see: hidden, its reveal failed, and it is content like any other.
+    if CLOSED_PANEL_ROLES.contains(&own_role.as_str()) && !(own_role == "tabpanel" && tab_panel_marked_open(dom, el)) {
         return true;
     }
     if dom
@@ -4131,6 +4161,11 @@ mod tests {
         assert!(rhythm_is_spacer(&d, ruled));
         d.set_style(ruled, "borderBottomWidth", "1px");
         assert!(!rhythm_is_spacer(&d, ruled));
+        // So is a short divider drawn only along its top (review of #941).
+        let divider = flow(&mut d, body, "div", (0.0, 160.0, 48.0, 2.0), "");
+        assert!(rhythm_is_spacer(&d, divider));
+        d.set_style(divider, "borderTopWidth", "2px");
+        assert!(!rhythm_is_spacer(&d, divider));
         // And one that holds words.
         let worded = flow(&mut d, body, "div", (0.0, 200.0, 800.0, 40.0), "");
         flow(&mut d, worded, "div", (0.0, 200.0, 800.0, 40.0), "Words");
