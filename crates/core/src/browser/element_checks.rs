@@ -436,7 +436,7 @@ pub fn check_element_stripe_child_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
         return Vec::new();
     };
     let host_tag = tag_lower(dom, host);
-    if host_tag == "body" || host_tag == "html" {
+    if host_tag == "body" || host_tag == "html" || is_stripe_heading_host(&host_tag) {
         return Vec::new();
     }
     if !dom.children(el).is_empty() {
@@ -470,9 +470,25 @@ pub fn check_element_stripe_child_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
     } else {
         None
     };
+    // The stripe is the card tell only on a card rounded away from it, the
+    // gate the border and pseudo-element forms apply (r6-t2): a bar beside
+    // a row on a square host is a marker, not a card's accent.
+    if let Some(side) = edge.map(|e| if e == "left" { 3 } else { 1 }) {
+        let corners = parse_radius_corners(Some(&dom.style(host, "borderRadius")), host_rect.width);
+        if !is_rounded_away_from_side(corners.as_ref(), side) {
+            return Vec::new();
+        }
+    }
     let width = child_rect.width;
     let bg = parse_rgb_or_any(&dom.style(el, "backgroundColor"));
     check_stripe_child(&class_selector(dom, el), width, edge, bg)
+}
+
+/// Whether a stripe child's host is a heading. A bar set inside an `h2`
+/// beside its text (lance.com.br's section titles) marks the heading; a
+/// heading is not a card.
+pub fn is_stripe_heading_host(host_tag: &str) -> bool {
+    matches!(host_tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
 }
 
 /// JS: checks.mjs#readPseudoSurfaceDOM(el, rect)
@@ -2260,6 +2276,7 @@ fn ai_palette_gradient_hit(
     let opacity = own_opacity(dom, el);
     let mut painted = 0usize;
     let mut in_band = 0usize;
+    let mut bridge = 0usize;
     let mut tell: Option<TellHue> = None;
     for c in &stops {
         // A stop DESIGN.md declares was picked; it is not the default
@@ -2279,12 +2296,22 @@ fn ai_palette_gradient_hit(
             if tell.is_none() {
                 tell = Some(band);
             }
+        } else if AI_PALETTE_BRIDGE_HUES.contains(&get_hue(Some(c))) {
+            bridge += 1;
         }
     }
     let tell = tell?;
     // One stop grazing a band edge inside an otherwise warm or brand ramp is
     // that ramp's accident, not a violet-to-cyan palette.
     if in_band * 2 < painted {
+        return None;
+    }
+    // Cyan collides with brand teals and greens, so a cyan ramp needs more
+    // than half its stops: one cyan stop beside one mint green is a tie, a
+    // teal-and-green brand wash (weborama.com's hero glow). A tie stands
+    // only where the other stops are the blues between the two bands, the
+    // stock blue-to-cyan ramp. A violet tie keeps the reading it had.
+    if tell == TellHue::Cyan && in_band * 2 == painted && bridge < painted - in_band {
         return None;
     }
     Some((
@@ -2405,6 +2432,10 @@ const AI_PALETTE_CYAN_HUES: std::ops::RangeInclusive<f64> = 170.0..=197.0;
 /// clears it.
 const AI_PALETTE_CYAN_MIN_SATURATION: f64 = 0.4;
 const AI_PALETTE_PURPLE_HUES: std::ops::RangeInclusive<f64> = 260.0..=310.0;
+
+/// The blues between the two bands, the middle of a stock violet-to-cyan
+/// ramp. A stop here is not a tell by itself; it keeps a cyan tie standing.
+const AI_PALETTE_BRIDGE_HUES: std::ops::Range<f64> = 197.0..260.0;
 
 impl TellHue {
     /// The band a hue falls in, `None` outside both. Hue alone: the

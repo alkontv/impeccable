@@ -367,6 +367,60 @@ re!(
     format!(r"{B}({W}+){WS}+{theater}{B}", theater = ci("theater"))
 );
 
+/// Whether a `repeating-*-gradient(` whose arguments start `args` tiles at
+/// all. Its pattern repeats every last-stop position, so a last stop at
+/// `100%`, or with no position (which is `100%`), draws the ramp once across
+/// the box: a faceted fill, not stripes (freddiemac.com's tonal chevrons).
+/// A stop list it cannot read, or a lone stop that may be a `var()` holding
+/// a colour and a position, counts as repeating.
+fn repeating_gradient_repeats(args: &str) -> bool {
+    let stops = crate::checks::css_scan::split_top_level(args, |c| c == ',');
+    if stops.len() < 2 {
+        return true;
+    }
+    let last = crate::checks::css_scan::split_top_level(stops[stops.len() - 1], char::is_whitespace);
+    match last.as_slice() {
+        [only] => js::to_lower_case(only).contains("var("),
+        [.., position] => js::to_lower_case(position) != "100%",
+        [] => true,
+    }
+}
+
+/// The words that make "X theater" the dismissive idiom: a practice called a
+/// performance of itself ("security theater", "growth theater"). Any other
+/// word before "theater" names a building, a stage or a war zone ("the
+/// official theater" of a ballet company, the PLA's "Southern Theater
+/// Command"), so the list is closed.
+const THEATER_DISMISSIVE_HEADS: &[&str] = &[
+    "accessibility",
+    "accountability",
+    "agile",
+    "alignment",
+    "compliance",
+    "diversity",
+    "engagement",
+    "governance",
+    "growth",
+    "hiring",
+    "hygiene",
+    "innovation",
+    "inclusion",
+    "kindness",
+    "leadership",
+    "metrics",
+    "privacy",
+    "process",
+    "productivity",
+    "quality",
+    "safety",
+    "security",
+    "strategy",
+    "sustainability",
+    "transparency",
+    "trust",
+    "wellness",
+];
+
 fn pf(id: &str, snippet: String, selector: Option<String>) -> PatternFinding {
     PatternFinding {
         id: id.to_string(),
@@ -640,7 +694,10 @@ pub fn check_html_patterns_with(
     }
 
     // --- Generated-UI tells: repeating-gradient stripes ---
-    if let Some(sm) = REPEATING_GRADIENT_RE.find(style_text) {
+    if let Some(sm) = REPEATING_GRADIENT_RE
+        .find_iter(style_text)
+        .find(|m| repeating_gradient_repeats(&style_text[m.end()..]))
+    {
         findings.push(pf(
             "repeating-stripes-gradient",
             "repeating-gradient decorative stripes".to_string(),
@@ -663,7 +720,11 @@ pub fn check_html_patterns_with(
         let no_script = SCRIPT_BLOCK_RE.replace_all(html, " ");
         let no_style = STYLE_BLOCK_STRIP_RE.replace_all(&no_script, " ");
         let body_text = ANY_TAG_RE.replace_all(&no_style, " ");
-        if let Some(tm) = THEATER_RE.find(&body_text) {
+        if let Some(tm) = THEATER_RE
+            .captures_iter(&body_text)
+            .find(|c| THEATER_DISMISSIVE_HEADS.contains(&js::to_lower_case(&c[1]).as_str()))
+            .and_then(|c| c.get(0))
+        {
             findings.push(pf(
                 "theater-slop-phrase",
                 format!("\"{}\"", js::trim(tm.as_str())),
@@ -680,6 +741,45 @@ mod tests {
     use super::*;
 
     // Expected values come from running the JS functions in Node.
+
+    /// freddiemac.com: a repeating gradient whose last stop sits at 100%, or
+    /// has no position, draws its ramp once and never tiles.
+    #[test]
+    fn a_repeating_gradient_that_never_repeats_is_not_stripes() {
+        assert!(!repeating_gradient_repeats("147deg, rgb(3, 46, 109), rgb(3, 46, 109) 40%, rgb(2, 29, 69) 80%, rgb(2, 29, 69)), none"));
+        assert!(!repeating_gradient_repeats("90deg, #eee, #ddd 100%)"));
+        assert!(repeating_gradient_repeats("45deg, #eee, #eee 10px, #fafafa 10px, #fafafa 20px)"));
+        assert!(repeating_gradient_repeats("to top, transparent 0, transparent calc(25% - 1px), var(--n) calc(25% - 1px), var(--n) 25%)"));
+        assert!(repeating_gradient_repeats("45deg, var(--a), var(--stripe))"));
+        let ids = |css: &str| -> Vec<String> {
+            check_html_patterns(&format!("<style>{css}</style>"), None).into_iter().map(|f| f.id).collect()
+        };
+        let once = ".a{background:repeating-linear-gradient(147deg,#032e6d,#032e6d 40%,#021d45)}";
+        let tiles = ".b{background:repeating-linear-gradient(45deg,#eee,#eee 10px,#fafafa 10px,#fafafa 20px)}";
+        assert!(!ids(once).contains(&"repeating-stripes-gradient".to_string()));
+        // A later gradient that tiles still reports.
+        assert!(ids(&format!("{once}{tiles}")).contains(&"repeating-stripes-gradient".to_string()));
+    }
+
+    /// auradeballet.com's "official theater" and globaltimes.cn's "Southern
+    /// Theater" Command name a building and a war zone.
+    #[test]
+    fn theater_framing_needs_a_dismissive_head() {
+        let theater = |text: &str| -> Vec<String> {
+            check_html_patterns(&format!("<p>{text}</p>"), None)
+                .into_iter()
+                .filter(|f| f.id == "theater-slop-phrase")
+                .map(|f| f.snippet)
+                .collect()
+        };
+        assert!(theater("The company returns to its official theater.").is_empty());
+        assert!(theater("The PLA Southern Theater Command held drills.").is_empty());
+        assert!(theater("Dance in any theater you like.").is_empty());
+        assert_eq!(
+            theater("The Southern Theater met. We cut the compliance theater.").as_slice(),
+            ["\"compliance theater\""]
+        );
+    }
 
     #[test]
     fn corpora_match_node() {

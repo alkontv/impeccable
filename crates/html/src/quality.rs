@@ -793,13 +793,19 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
                 if tracking_em > 0.05 {
                     // Wide tracking is the standard treatment for an
                     // uppercase eyebrow, label or button. `text-transform`
-                    // says so outright; capitals typed into the markup do
-                    // not, so that reading is held to label size. This
-                    // engine has no layout, so a run inside the label length
-                    // counts as one line.
+                    // says so outright, and capitals typed into the markup
+                    // take the same exemption at any length when every
+                    // letter is one. A run inside the label length keeps the
+                    // looser reading it had (a CJK label with a Latin
+                    // acronym); this engine has no layout, so it counts as
+                    // one line.
+                    let own = el.text_content();
+                    let own = js::trim(&own);
+                    let every_letter_caps = is_capitalized_run(own)
+                        && own.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase());
                     let caps_label = sv_opt(style, "textTransform") == Some("uppercase")
-                        || (text_len <= TRACKED_LABEL_MAX_CHARS
-                            && is_capitalized_run(js::trim(&el.text_content())));
+                        || every_letter_caps
+                        || (text_len <= TRACKED_LABEL_MAX_CHARS && is_capitalized_run(own));
                     if !caps_label {
                         findings.push(RuleHit::new(
                             "wide-tracking",
