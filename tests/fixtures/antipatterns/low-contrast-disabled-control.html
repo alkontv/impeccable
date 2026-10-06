@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>low-contrast, a disabled control</title>
+<!--
+  observations-42 row 6 (lance.com.br). A disabled button is faded on
+  purpose and asks nothing of the reader; its colours are not a contrast
+  verdict. The enabled twin, white on #16a34a at 3.3:1, reports.
+-->
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; color: #111111; background: #ffffff; padding: 40px; }
+  .confirm { display: block; width: 283px; height: 40px; margin-bottom: 24px; border: 0; border-radius: 6px; background: #16a34a; color: #ffffff; font-size: 14px; font-weight: 400; }
+  .confirm:disabled { opacity: 0.5; }
+</style>
+</head>
+<body>
+  <button type="button" class="confirm flag-enabled">Confirmar palpite</button>
+  <button type="button" class="confirm pass-disabled" disabled>Confirmar palpite</button>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Body text viewport edge, display text in a generic box</title>
+  <!--
+    observations-42 row 6 (fanniemae.com), scanned at 390x844. A section
+    title set at 28px in a div is a heading in a generic box, not body copy
+    at the window's edge. The same box holding 16px copy still reports.
+  -->
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 0; color: #111111; background: #ffffff; }
+    .edge { padding: 0 10px; margin: 0 0 24px; }
+    .title { font-size: 28px; line-height: 36px; }
+  </style>
+</head>
+<body>
+  <div class="edge flag-body-copy">Our mission is to make housing work for people who rent and people who own.</div>
+  <div class="edge title pass-display-title">Our mission is to make housing work for everyone.</div>
+</body>
+</html>

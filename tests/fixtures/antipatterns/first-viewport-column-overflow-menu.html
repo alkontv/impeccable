@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>first-viewport-column-overflow, a section menu beside the article</title>
+<!--
+  Should pass (observations-42 row 6, fanniemae.com). A long article beside
+  a sidebar that is a list of links, set without a nav element or a role. A
+  section menu is short by design, like a navigation rail, and is not the
+  column the article's length is measured against.
+  first-viewport-column-overflow.html keeps the flag case.
+-->
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; color: #111111; background: #ffffff; }
+  .layout { display: flex; padding: 40px; gap: 40px; }
+  .layout .article { width: 66%; }
+  .layout .article p { height: 1500px; font-size: 16px; line-height: 1.6; }
+  .layout .side { width: 34%; }
+  .side ul { list-style: none; padding: 0; }
+  .side li { height: 44px; }
+</style>
+</head>
+<body>
+  <section class="layout">
+    <div class="article"><p>Who we are: the article runs on well past the fold.</p></div>
+    <div class="side">
+      <ul>
+        <li><a href="#">Who We Are</a></li>
+        <li><a href="#">Leadership</a></li>
+        <li><a href="#">Our History</a></li>
+        <li><a href="#">Careers</a></li>
+        <li><a href="#">Newsroom</a></li>
+      </ul>
+    </div>
+  </section>
+</body>
+</html>
