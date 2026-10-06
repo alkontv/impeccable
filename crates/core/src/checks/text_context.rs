@@ -153,10 +153,10 @@ pub struct TransformRead {
     /// The box is scaled by one factor on both axes, rotated in the page
     /// plane or not.
     pub uniform_scale: Option<f64>,
-    /// The sine of the box's turn in the page plane (`rotate()`, or a
-    /// matrix that turns without skewing), read with `uniform_scale`; 0
-    /// when the box is not turned or its scale is not uniform.
-    pub rotation_sin: f64,
+    /// The box's turn in the page plane, in radians (`rotate()`, or a
+    /// matrix that turns without skewing); 0 when it is not turned, or when
+    /// a skew or a 3D transform leaves the turn unread.
+    pub turn_rad: f64,
 }
 
 /// The sine of a tilt that counts: about 1.15 degrees. outreign.io's demo
@@ -194,6 +194,11 @@ fn numbers(args: &str) -> Vec<f64> {
 
 /// The sine of an angle argument (`8deg`, `0.2rad`, `0.05turn`).
 fn angle_sin(arg: &str) -> f64 {
+    angle_rad(arg).map_or(0.0, f64::sin)
+}
+
+/// An angle argument in radians.
+fn angle_rad(arg: &str) -> Option<f64> {
     let a = arg.trim().to_ascii_lowercase();
     let (n, to_rad) = if let Some(n) = a.strip_suffix("deg") {
         (n, std::f64::consts::PI / 180.0)
@@ -206,7 +211,7 @@ fn angle_sin(arg: &str) -> f64 {
     } else {
         (a.as_str(), std::f64::consts::PI / 180.0)
     };
-    n.trim().parse::<f64>().map_or(0.0, |n| (n * to_rad).sin())
+    n.trim().parse::<f64>().ok().map(|n| n * to_rad).filter(|r| r.is_finite())
 }
 
 /// Read a `transform` value, computed (`matrix(...)`, `matrix3d(...)`) or as
@@ -264,14 +269,10 @@ pub fn read_transform(value: &str) -> TransformRead {
                 }
             }
             "rotate" | "rotatez" | "skew" | "skewx" | "skewy" => {
-                let sin = angle_sin(c[2].split(',').next().unwrap_or(""));
-                if sin.abs() > 0.01 {
+                let rad = angle_rad(c[2].split(',').next().unwrap_or("")).unwrap_or(0.0);
+                if rad.sin().abs() > 0.01 {
                     rotated = true;
-                    angle = if name.starts_with("rotate") {
-                        angle.map(|a| a + sin.clamp(-1.0, 1.0).asin())
-                    } else {
-                        None
-                    };
+                    angle = if name.starts_with("rotate") { angle.map(|a| a + rad) } else { None };
                 }
             }
             "scale" if !n.is_empty() => {
@@ -287,13 +288,37 @@ pub fn read_transform(value: &str) -> TransformRead {
     // A turn in the page plane keeps the scale readable; a tilt or a skew
     // does not.
     let flat_turn = if rotated { angle.filter(|_| !out.tilt_3d) } else { Some(0.0) };
-    if let (Some((sx, sy)), Some(turn)) = (scale, flat_turn) {
-        if !out.tilt_3d && (sx - sy).abs() < 0.02 {
-            out.uniform_scale = Some(sx);
-            out.rotation_sin = turn.sin();
+    if let Some(turn) = flat_turn {
+        out.turn_rad = turn;
+        if let Some((sx, sy)) = scale {
+            if !out.tilt_3d && (sx - sy).abs() < 0.02 {
+                out.uniform_scale = Some(sx);
+            }
         }
     }
     out
+}
+
+/// The turn the standalone `rotate` property gives, in radians: `10deg`,
+/// or `z 10deg` / `0 0 1 10deg`. `None` for no turn in the page plane
+/// (`none`, a turn about x or y, which is not read here).
+fn rotate_property(value: &str) -> Option<f64> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    match parts.as_slice() {
+        [a] => angle_rad(a),
+        [axis, a] if axis.eq_ignore_ascii_case("z") => angle_rad(a),
+        [x, y, z, a] if x.parse::<f64>().ok() == Some(0.0) && y.parse::<f64>().ok() == Some(0.0) => {
+            let z: f64 = z.parse().ok()?;
+            angle_rad(a).map(|r| if z < 0.0 { -r } else { r })
+        }
+        _ => None,
+    }
+}
+
+/// The sine of the box's whole turn in the page plane: `transform` and the
+/// `rotate` property together.
+fn turn_sin(c: &impl ContextNode, t: &TransformRead) -> f64 {
+    (t.turn_rad + rotate_property(&c.style("rotate")).unwrap_or(0.0)).sin()
 }
 
 /// Add a 2D matrix's turn to `angle`, or `None` when the matrix skews
@@ -489,8 +514,9 @@ fn is_transformed_frame(c: &impl ContextNode) -> bool {
     // A frame turned in the page plane counts only when it is also scaled
     // down: a card fanned at full size (a polaroid testimonial stack) is
     // content. A turn of under 3 degrees reads the scale as before.
-    let turned = t.rotation_sin.abs() >= ROTATION_MIN_SIN;
-    let tilt_free = t.rotation_sin.abs() < 0.01 || turned;
+    let turn = turn_sin(c, &t).abs();
+    let turned = turn >= ROTATION_MIN_SIN;
+    let tilt_free = turn < 0.01 || turned;
     size.is_some() && tilt_free && frame_scale(c, &t).is_some() && is_frame_box(c)
 }
 
@@ -516,7 +542,7 @@ fn is_scaled_wrapper(c: &impl ContextNode) -> bool {
         return false;
     }
     let t = read_transform(&c.style("transform"));
-    !t.tilt_3d && t.rotation_sin.abs() < 0.01 && frame_scale(c, &t).is_some()
+    !t.tilt_3d && turn_sin(c, &t).abs() < 0.01 && frame_scale(c, &t).is_some()
 }
 
 /// A frame-sized box drawn as a frame, its size known.
@@ -1195,16 +1221,26 @@ mod tests {
         // A turn in the page plane keeps the scale; a skew does not.
         let turned = read_transform("rotate(-4deg) scale(0.7)");
         assert_eq!(turned.uniform_scale, Some(0.7));
-        assert!((turned.rotation_sin - (-4f64).to_radians().sin()).abs() < 1e-9);
+        assert!((turned.turn_rad - (-4f64).to_radians()).abs() < 1e-9);
+        // Composed turns add as angles, not as sines.
+        let composed = read_transform("rotate(100deg) rotate(78deg) scale(0.78)");
+        assert!((composed.turn_rad.sin() - 178f64.to_radians().sin()).abs() < 1e-9);
         let deck = read_transform("matrix(0.762955, -0.162171, 0.162171, 0.762955, -466.4, 106)");
         assert!((deck.uniform_scale.unwrap() - 0.78).abs() < 0.01);
-        assert!((deck.rotation_sin - (-12f64).to_radians().sin()).abs() < 0.01);
+        assert!((deck.turn_rad - (-12f64).to_radians()).abs() < 0.01);
         let flat = read_transform("matrix3d(0.762955, -0.162171, 0, 0, 0.162171, 0.762955, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)");
         assert!((flat.uniform_scale.unwrap() - 0.78).abs() < 0.01);
         assert_eq!(read_transform("matrix(0.7, 0, 0.3, 0.7, 0, 0)").uniform_scale, None);
         assert_eq!(read_transform("rotate(10deg) skewX(10deg) scale(0.7)").uniform_scale, None);
         assert_eq!(read_transform("perspective(900px) rotateX(8deg) rotate(10deg) scale(0.7)").uniform_scale, None);
-        assert_eq!(read_transform("scale(0.7)").rotation_sin, 0.0);
+        assert_eq!(read_transform("scale(0.7)").turn_rad, 0.0);
+        // The turn is read without a scale in the same value.
+        assert!((read_transform("rotate(2deg)").turn_rad - 2f64.to_radians()).abs() < 1e-9);
+        assert_eq!(rotate_property("10deg"), Some(10f64.to_radians()));
+        assert_eq!(rotate_property("z 10deg"), Some(10f64.to_radians()));
+        assert_eq!(rotate_property("0 0 1 10deg"), Some(10f64.to_radians()));
+        assert_eq!(rotate_property("x 10deg"), None);
+        assert_eq!(rotate_property("none"), None);
         assert_eq!(read_transform("none"), TransformRead::default());
     }
 
@@ -1498,6 +1534,34 @@ mod tests {
             };
             let quote = card.add("p").text("Best tool we bought this year").font(10.0);
             assert!(!in_framed_demo(&quote), "{transform}, framed: {frame}");
+        }
+        // The turn and the scale may come from `transform`, `rotate` and
+        // `scale` in any mix; the turn is read whole either way.
+        for (props, demo) in [
+            (&[("rotate", "10deg"), ("scale", "0.78")][..], true),
+            (&[("transform", "rotate(10deg)"), ("scale", "0.78")][..], true),
+            (&[("transform", "rotate(2deg)"), ("scale", "0.78")][..], false),
+            (&[("rotate", "2deg"), ("scale", "0.78")][..], false),
+            (&[("rotate", "1deg"), ("transform", "rotate(1.5deg) scale(0.78)")][..], false),
+        ] {
+            let (_t, body) = Tree::new();
+            let mut card = framed(body.add("div").rect(0.0, 0.0, 320.0, 360.0));
+            for (k, v) in props {
+                card = card.style(k, v);
+            }
+            let quote = card.add("p").text("Best tool we bought this year").font(10.0);
+            assert_eq!(in_framed_demo(&quote), demo, "{props:?}");
+        }
+        // A wrapper that turns as well as scales is not read as a stage.
+        for props in [&[("transform", "rotate(12deg)"), ("scale", "0.8")][..], &[("rotate", "12deg"), ("scale", "0.8")][..]] {
+            let (_t, body) = Tree::new();
+            let mut w = body.add("div").rect(0.0, 0.0, 600.0, 400.0);
+            for (k, v) in props {
+                w = w.style(k, v);
+            }
+            let win = framed(w.add("div").rect(0.0, 0.0, 400.0, 300.0));
+            assert!(!in_framed_demo(&win.add("span").text("Ready")), "{props:?}");
+            assert!(!is_demo_frame(&win), "{props:?}");
         }
     }
 
