@@ -438,6 +438,7 @@ fn is_sample_caption_node<N: ContextNode>(n: &N) -> bool {
         let tag = p.tag();
         if matches!(tag.as_str(), "code" | "pre" | "kbd" | "samp" | "a" | "button" | "label" | "summary")
             || is_heading(&p)
+            || p.attr("role").is_some_and(|r| DEMO_CONTROL_ROLES.contains(&r.trim().to_lowercase().as_str()))
             || (depth == 0 && !collapse(&p.direct_text()).is_empty())
         {
             return false;
@@ -447,11 +448,18 @@ fn is_sample_caption_node<N: ContextNode>(n: &N) -> bool {
     true
 }
 
-/// A sample caption on the panel: in its first or its last child, which is
-/// where a header pill ("Illustrative", getpaidlens.com) and a footer note
+/// A sample caption on the panel: in its first or its last child (or its
+/// one wrapper's), which is where a header pill ("Illustrative", getpaidlens.com) and a footer note
 /// ("Illustrative example. Figures shown are not customer data.") sit.
 fn has_sample_caption_on<N: ContextNode>(panel: &N) -> bool {
-    let kids = panel.children();
+    // A panel that holds one wrapper has its header and footer inside it.
+    let mut kids = panel.children();
+    for _ in 0..3 {
+        if kids.len() != 1 {
+            break;
+        }
+        kids = kids[0].children();
+    }
     if kids.len() < 2 {
         return false;
     }
@@ -1610,6 +1618,15 @@ mod tests {
         assert!(in_framed_demo(&label));
         assert!(!in_framed_demo(&note));
 
+        // A panel whose header and footer sit in its one wrapper.
+        let (_t2, body2) = Tree::new();
+        let inner = framed(body2.add("div").rect(0.0, 0.0, 600.0, 400.0)).add("div").add("div");
+        inner.add("div").add("span").text("Decision Center");
+        let wrapped = inner.add("div").add("span").text("Confidence");
+        assert!(!in_framed_demo(&wrapped));
+        inner.add("p").text("Illustrative example. Figures shown are not customer data.");
+        assert!(in_framed_demo(&wrapped));
+
         // A control in the panel keeps its severity.
         let button = frame.children()[1].add("button").text("Approve");
         assert!(!in_framed_demo(&button));
@@ -1622,6 +1639,7 @@ mod tests {
             |head| { head.add("p").text("An example project mid-migration."); },
             |head| { head.add("p").text("shows what a report holds.").add("b").text("Sample data"); },
             |head| { head.add("pre").add("span").text("Sample data"); },
+            |head| { head.add("div").attr("role", "button").add("span").text("Sample data"); },
         ] {
             let (_t, body) = Tree::new();
             let (frame, head, label) = panel(&body);

@@ -103,14 +103,22 @@ fn marked_mockup(dom: &dyn Dom, el: ElId) -> (bool, bool) {
 /// three title-bar dots, preview caption, or scaled or tilted device frame,
 /// and r8-t1's frame box with a sample caption on it or beside it).
 /// `nested-cards` reports an inner box here as advisory (decision
-/// r6-t3-nested-cards-mockups), and `text-occlusion` text covered here
-/// (decision r8-t2-occlusion-stacked-mockup). A mockup class or id is not read: an
+/// r6-t3-nested-cards-mockups); `text-occlusion` asks
+/// [`covered_text_in_mockup_dom`]. A mockup class or id is not read: an
 /// `illustration` names a feature tile's picture as often as a mockup, and
 /// r4-p17 keeps such a tile failing.
 pub fn box_in_mockup_dom(dom: &dyn Dom, el: ElId) -> bool {
     under_html_picture(dom, el)
         || super::text_context::in_framed_demo_dom(dom, el)
         || super::text_context::is_demo_frame_dom(dom, el)
+}
+
+/// Whether covered text sits in a drawn product mockup and is not a
+/// control's: `text-occlusion` reports it as advisory (decision
+/// r8-t2-occlusion-stacked-mockup). The framed-demo walk ends at a control
+/// on its own; the `role="img"` path does not, so the control is asked here.
+pub fn covered_text_in_mockup_dom(dom: &dyn Dom, el: ElId) -> bool {
+    closest_or_none(dom, el, CONTROL_SELECTOR).is_none() && box_in_mockup_dom(dom, el)
 }
 
 /// `el` or an ancestor is an HTML element marked `role="img"`, outside any

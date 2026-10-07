@@ -3293,6 +3293,9 @@ const MARQUEE_TRACK_MAX_DEPTH: usize = 4;
 pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
     let mut findings = Vec::new();
     let mut seen_victims: Vec<ElId> = Vec::new();
+    // The inline boxes reported for a fill that leaks: there the element is
+    // what covers, not what is covered.
+    let mut leak_hosts: Vec<ElId> = Vec::new();
     let (vw, vh) = occlusion_viewport(dom);
     let body = dom.body();
 
@@ -3820,6 +3823,7 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
         if !(overhang > 0.0) {
             continue;
         }
+        leak_hosts.push(el);
         seen_victims.push(el);
         findings.push(ElFinding {
             el: Some(el),
@@ -3838,10 +3842,13 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
     // Text covered inside a drawn product mockup is covered on purpose:
     // suitemigration.com fans five app screens into a deck, and nobody is
     // meant to read the card behind. Advisory there (decision
-    // r8-t2-occlusion-stacked-mockup); a control in the mockup and covered
-    // page text keep the registry's severity.
+    // r8-t2-occlusion-stacked-mockup). Covered page text, a control in the
+    // mockup, and the box whose fill leaks onto a neighbour keep the
+    // registry's severity.
     for f in &mut findings {
-        if f.el.is_some_and(|el| super::decorative_text::box_in_mockup_dom(dom, el)) {
+        if f.el.is_some_and(|el| {
+            !leak_hosts.contains(&el) && super::decorative_text::covered_text_in_mockup_dom(dom, el)
+        }) {
             f.finding.severity = Some(crate::checks::rules::ADVISORY_SEVERITY.to_string());
         }
     }
@@ -5309,6 +5316,33 @@ mod tests {
         assert_eq!(build("p", &|_, _| {}), None, "covered page text");
         assert_eq!(build("p", &tilted), advisory, "covered in a tilted device frame");
         assert_eq!(build("button", &tilted), None, "a control in the mockup");
+        // The picture path has no control guard of its own.
+        let picture = |d: &mut FakeDom, card: ElId| { d.set_attr(card, "role", "img"); };
+        assert_eq!(build("p", &picture), advisory, "covered in a subtree marked as a picture");
+        assert_eq!(build("button", &picture), None, "a control in a picture");
+
+        // An inline box whose fill leaks onto its neighbour is what covers,
+        // not what is covered: in a mockup it keeps its severity.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let base = &[("display", "block"), ("visibility", "visible"), ("opacity", "1"), ("contentVisibility", "visible"), ("position", "static"), ("cssFloat", "none"), ("animationName", "none")][..];
+        let wrap = d.add(Some(body), "div");
+        d.set_styles(wrap, base);
+        d.set_style(wrap, "transform", "perspective(900px) rotateX(8deg)");
+        d.set_rect(wrap, 0.0, 0.0, 400.0, 200.0);
+        let leak = d.add(Some(wrap), "span");
+        d.set_styles(leak, base);
+        d.set_styles(leak, &[("display", "inline"), ("backgroundColor", "rgb(255, 0, 0)"), ("paddingTop", "20px"), ("paddingBottom", "20px"), ("fontSize", "16px"), ("lineHeight", "20px")]);
+        d.set_rect(leak, 10.0, 10.0, 40.0, 60.0);
+        let sib = d.add(Some(wrap), "p");
+        d.add_text(sib, "neighbour");
+        d.set_styles(sib, base);
+        d.set_rect(sib, 0.0, 40.0, 400.0, 20.0);
+        mark_body_descendants(&mut d);
+        let f = check_text_occlusion_dom(&d);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].el, Some(leak));
+        assert_eq!(f[0].finding.severity, None);
     }
 
     /// Three labels in one padded inline link, set apart by wide margins,
