@@ -1963,9 +1963,9 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                     // same size on one line.
                     let control_label = closest_or_none(dom, el, TRACKED_CONTROL_LABEL).is_some()
                         && short_one_line_label(dom, el, q.line_height_px);
-                    // A `text-transform` that lowers the case renders no
+                    // `text-transform: lowercase` renders no
                     // capitals, whatever the markup typed.
-                    let lowered = matches!(st("textTransform").as_str(), "lowercase" | "capitalize");
+                    let lowered = st("textTransform") == "lowercase";
                     let caps_label = st("textTransform") == "uppercase"
                         || (!lowered
                             && (typed_caps_text(dom, el) || typed_caps_label(dom, el, q.line_height_px, false)));

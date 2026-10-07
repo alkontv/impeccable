@@ -382,7 +382,12 @@ fn repeating_gradient_repeats(args: &str) -> bool {
     };
     // The first argument is a direction or a shape unless it opens with a colour.
     let first_index = match tokens(stops.first().copied().unwrap_or("")).first() {
-        Some(t) if crate::color::parse_any_color(Some(t)).is_some() => 0,
+        Some(t)
+            if crate::color::parse_any_color(Some(t)).is_some()
+                || matches!(t.as_str(), "transparent" | "currentcolor") =>
+        {
+            0
+        }
         Some(t) if t.contains("var(") => return true,
         _ => 1,
     };
@@ -407,7 +412,9 @@ fn gradient_position(token: &str) -> Option<f64> {
     while let Some(inner) = t.strip_prefix("calc(").and_then(|r| r.strip_suffix(')')) {
         t = inner.to_string();
     }
-    let split = t.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))?;
+    let split = t
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
+        .unwrap_or(t.len());
     let n: f64 = if split == 0 { return None } else { t[..split].parse().ok()? };
     if n == 0.0 {
         return Some(0.0);
@@ -795,6 +802,10 @@ mod tests {
         assert!(!repeating_gradient_repeats("from 0deg, #000, #fff 1turn)"));
         assert!(!repeating_gradient_repeats("#000, #fff)"));
         assert!(repeating_gradient_repeats("#000, #fff 50%)"));
+        // A unitless 0 is a zero, and a keyword colour opens the stop list.
+        assert!(!repeating_gradient_repeats("90deg, #000 0, #fff 100%)"));
+        assert!(!repeating_gradient_repeats("transparent, #fff 100%)"));
+        assert!(!repeating_gradient_repeats("currentColor 0, #fff)"));
         let ids = |css: &str| -> Vec<String> {
             check_html_patterns(&format!("<style>{css}</style>"), None).into_iter().map(|f| f.id).collect()
         };

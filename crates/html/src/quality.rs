@@ -803,7 +803,7 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
                     let every_letter_caps = utf16_len(&own) < ALL_CAPS_LONG_RUN
                         && is_capitalized_run(&own)
                         && own.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase());
-                    let lowered = matches!(sv_opt(style, "textTransform"), Some("lowercase" | "capitalize"));
+                    let lowered = sv_opt(style, "textTransform") == Some("lowercase");
                     let caps_label = sv_opt(style, "textTransform") == Some("uppercase")
                         || (!lowered
                             && (every_letter_caps

@@ -73,6 +73,13 @@ fn typed_capitals_past_label_length_take_the_uppercase_exemption() {
         ),
         1
     );
+    // `capitalize` leaves capitals as they were typed.
+    assert_eq!(
+        tracking_hits(
+            r#"<p class="run" style="letter-spacing: 0.12em; text-transform: capitalize">SUPPORT HOURS RUN MONDAY TO FRIDAY.</p>"#
+        ),
+        0
+    );
     // A long run with one Latin acronym among uncased letters is running text.
     assert_eq!(
         tracking_hits(
