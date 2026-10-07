@@ -253,6 +253,34 @@ pub trait Dom {
         None
     }
 
+    // ── image load state ──────────────────────────────────────────────
+    //
+    // What tells a loaded `<img>` from one whose source failed. All three
+    // answer `None` for anything that is not an `HTMLImageElement` (an
+    // `input type=image` and an SVG `<image>` have no `naturalWidth` or
+    // `complete` on their interfaces) and from a probe that cannot say. The
+    // `loading` attribute is [`Dom::attr`]`(el, "loading")`.
+    /// `[img.naturalWidth, img.naturalHeight]`: the decoded image's own size
+    /// in CSS pixels, `(0, 0)` while nothing has decoded (not requested yet,
+    /// still loading, or failed; [`Dom::image_complete`] separates those).
+    fn image_natural_size(&self, _el: ElId) -> Option<(f64, f64)> {
+        None
+    }
+    /// `img.complete`: the image is not waiting on a fetch. True once it
+    /// decoded, true once the fetch failed, and true with no source at all;
+    /// false while the fetch is pending, which includes a `loading=lazy`
+    /// image the browser has not requested yet. `None` where the probe did
+    /// not read it (a snapshot recorded before the capture did).
+    fn image_complete(&self, _el: ElId) -> Option<bool> {
+        None
+    }
+    /// `img.currentSrc`: the absolute URL the browser selected from `src`,
+    /// `srcset` and the `<source>`s of an enclosing `<picture>`. Empty when
+    /// it has selected none.
+    fn image_current_src(&self, _el: ElId) -> Option<String> {
+        None
+    }
+
     // ── the flat tree ─────────────────────────────────────────────────
     /// The box an element paints inside once shadow trees are composed: the
     /// slot a light-DOM child is assigned to, else its parent, else the host
@@ -594,5 +622,14 @@ mod tests {
     fn a_light_tree_probe_records_no_shadow_trees() {
         assert!(!LightTreeOnly.shadow_trees_recorded());
         assert_eq!(LightTreeOnly.flat_parent(3), None);
+    }
+
+    /// A probe written before the image load state existed answers
+    /// "unknown" for all of it, which a caller must not read as "failed".
+    #[test]
+    fn a_probe_without_image_state_answers_unknown() {
+        assert_eq!(LightTreeOnly.image_natural_size(3), None);
+        assert_eq!(LightTreeOnly.image_complete(3), None);
+        assert_eq!(LightTreeOnly.image_current_src(3), None);
     }
 }
