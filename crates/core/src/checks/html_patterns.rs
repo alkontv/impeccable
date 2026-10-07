@@ -401,11 +401,33 @@ fn repeating_gradient_repeats(args: &str, radial: bool) -> bool {
         return true;
     }
     if radial && first_index == 1 {
-        let shape = tokens(stops[0]);
-        let sized = shape
-            .iter()
-            .take_while(|t| t.as_str() != "at")
-            .any(|t| !matches!(t.as_str(), "circle" | "ellipse" | "farthest-corner"));
+        // The prelude also holds a position (`at ...`) and may name how the
+        // colours are mixed (`in oklch longer hue`), before or after the
+        // shape; neither sizes the ending shape.
+        let prelude = tokens(stops[0]);
+        let mut sized = false;
+        let mut i = 0;
+        while i < prelude.len() {
+            match prelude[i].as_str() {
+                "at" => {
+                    i += 1;
+                    while i < prelude.len() && prelude[i] != "in" {
+                        i += 1;
+                    }
+                }
+                "in" => {
+                    i += 2;
+                    if prelude.get(i + 1).is_some_and(|t| t == "hue") {
+                        i += 2;
+                    }
+                }
+                "circle" | "ellipse" | "farthest-corner" => i += 1,
+                _ => {
+                    sized = true;
+                    break;
+                }
+            }
+        }
         if sized {
             return true;
         }
@@ -834,6 +856,13 @@ mod tests {
         assert!(repeating_gradient_repeats("closest-corner at 50% 50%, #000, #fff)", true));
         assert!(repeating_gradient_repeats("circle 40px at center, #000, #fff 100%)", true));
         assert!(repeating_gradient_repeats("farthest-side, #000, #fff 100%)", true));
+        // Naming the colour space, before or after the shape, sizes nothing.
+        assert!(!repeating_gradient_repeats("circle in srgb, #000 0%, #fff 100%)", true));
+        assert!(!repeating_gradient_repeats("in oklch longer hue, #000, #fff)", true));
+        assert!(!repeating_gradient_repeats("in hsl circle at 10% 20%, #000, #fff 100%)", true));
+        assert!(!repeating_gradient_repeats("ellipse at top left in oklab, #000, #fff 100%)", true));
+        assert!(repeating_gradient_repeats("circle closest-side in srgb, #000, #fff 100%)", true));
+        assert!(repeating_gradient_repeats("in srgb 40px 20px at center, #000, #fff 100%)", true));
         let ids = |css: &str| -> Vec<String> {
             check_html_patterns(&format!("<style>{css}</style>"), None).into_iter().map(|f| f.id).collect()
         };
