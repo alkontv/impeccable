@@ -1088,6 +1088,7 @@ struct AnimationEntry {
     delay: String,
     timeline: String,
     play_state: String,
+    composition: String,
 }
 
 /// The entries of the element's `animation-*` lists, one per name other
@@ -1113,6 +1114,7 @@ fn animation_entries(dom: &dyn Dom, el: ElId) -> Vec<AnimationEntry> {
     let (iterations, fill, direction) = (list("animationIterationCount"), list("animationFillMode"), list("animationDirection"));
     let (duration, delay, timeline) = (list("animationDuration"), list("animationDelay"), list("animationTimeline"));
     let play_state = list("animationPlayState");
+    let composition = list("animationComposition");
     names
         .split(',')
         .map(js::trim)
@@ -1127,6 +1129,7 @@ fn animation_entries(dom: &dyn Dom, el: ElId) -> Vec<AnimationEntry> {
             delay: at(&delay, i),
             timeline: at(&timeline, i),
             play_state: at(&play_state, i),
+            composition: at(&composition, i),
         })
         .collect()
 }
@@ -1209,12 +1212,19 @@ fn opacity_at_offset(dom: &dyn Dom, name: &str, at: f64) -> Option<f64> {
 /// the document timeline, and a keyframe at the offset the direction ends on
 /// sets `opacity`. `None` for anything else: an unrecorded list or keyframe
 /// selector, an infinite or fractional count, a scroll-driven timeline, a
-/// fill mode that hands the box back to its own style.
+/// fill mode that hands the box back to its own style, an
+/// `animation-composition` other than `replace`.
 fn held_end_opacity(dom: &dyn Dom, entry: &AnimationEntry) -> Option<f64> {
     if entry.play_state != "running" || !matches!(entry.fill.as_str(), "forwards" | "both") {
         return None;
     }
     if !(entry.timeline.is_empty() || entry.timeline == "auto") {
+        return None;
+    }
+    // Only a replacing animation ends on its end frame's value: under `add`
+    // or `accumulate` the frame's opacity is combined with the box's own,
+    // which the capture does not know apart from the animated value it read.
+    if entry.composition != "replace" {
         return None;
     }
     let count = js::parse_float(&entry.iterations);
@@ -3614,6 +3624,7 @@ mod tests {
                 ("animationDelay", "0s"),
                 ("animationTimeline", "auto"),
                 ("animationPlayState", "running"),
+                ("animationComposition", "replace"),
             ],
         );
         d.set_running_animations(el, &["opacity"]);
@@ -3707,10 +3718,24 @@ mod tests {
         d.el_mut(old).running_animations = None;
         assert_eq!(text(&d, old), None);
         one_shot(&mut d, old, "ds-url-old", "forwards");
-        for prop in ["animationFillMode", "animationDirection", "animationDuration", "animationDelay", "animationPlayState"] {
+        for prop in [
+            "animationFillMode",
+            "animationDirection",
+            "animationDuration",
+            "animationDelay",
+            "animationPlayState",
+            "animationComposition",
+        ] {
             one_shot(&mut d, old, "ds-url-old", "forwards");
             d.set_style(old, prop, "");
             assert_eq!(text(&d, old), None, "{prop} unrecorded");
+        }
+        // An animation that adds to the box's own opacity does not end on
+        // its end frame's value: 1 plus the frame's 0 is still shown.
+        for composition in ["add", "accumulate"] {
+            one_shot(&mut d, old, "ds-url-old", "forwards");
+            d.set_style(old, "animationComposition", composition);
+            assert_eq!(text(&d, old), None, "{composition}");
         }
     }
 

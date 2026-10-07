@@ -62,6 +62,7 @@ pub const NS_MATHML: &str = "http://www.w3.org/1998/Math/MathML";
 /// sync with `STYLE_PROPS` in `browser-bundle/15-snapshot.js` (the build
 /// checks the two lists agree).
 pub const STYLE_PROPS: &[&str] = &[
+    "animationComposition",
     "animationDelay",
     "animationDirection",
     "animationDuration",
@@ -1368,14 +1369,21 @@ mod tests {
         );
     }
 
-    /// The fill mode, direction, duration, delay and play state of animations,
+    /// The fill mode, direction, duration, delay, play state and composition of animations,
     /// and the keyframe selectors, joined the capture later: a recording
     /// without them reads each as empty or `None`, which the rules that end
     /// an animation take as unknown.
     #[test]
     fn older_capture_without_animation_timing_props() {
         let d = snap(SMALL);
-        for prop in ["animationFillMode", "animationDirection", "animationDuration", "animationDelay", "animationPlayState"] {
+        for prop in [
+            "animationFillMode",
+            "animationDirection",
+            "animationDuration",
+            "animationDelay",
+            "animationPlayState",
+            "animationComposition",
+        ] {
             assert!(STYLE_PROPS.contains(&prop), "{prop} missing from STYLE_PROPS");
             assert_eq!(d.style(5, prop), "", "{prop}");
         }

@@ -6264,6 +6264,7 @@ mod tests {
                 ("animationDuration", "10s"),
                 ("animationDelay", "0s"),
                 ("animationPlayState", "running"),
+                ("animationComposition", "replace"),
             ],
             "ok, moving to 10am",
         );
