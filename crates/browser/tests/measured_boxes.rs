@@ -129,7 +129,13 @@ fn text_occlusion_needs_text_under_the_cover() {
     assert_cases(
         &found,
         &["flag-inline-leak", "flag-under-sticker", "flag-small-box-card", "flag-deck-status"],
-        &["pass-inline-alone", "pass-past-the-words", "pass-arrow-card"],
+        &[
+            "pass-inline-alone",
+            "pass-past-the-words",
+            "pass-arrow-card",
+            "pass-prev-arrow-card",
+            "pass-inline-no-overhang",
+        ],
         "text-occlusion",
     );
     let deck = found.iter().find(|(_, sel)| sel.contains("flag-deck-status")).expect("deck");
@@ -140,10 +146,37 @@ fn text_occlusion_needs_text_under_the_cover() {
 fn a_link_menu_is_not_a_column_and_a_disabled_control_takes_no_verdict() {
     let Some(engine) = engine() else { return };
     let port = serve();
-    let menu = findings(&engine, port, "first-viewport-column-overflow-menu.html", "first-viewport-column-overflow");
-    assert!(menu.is_empty(), "{menu:?}");
+    // Two rows open the page side by side, each half the 1280px window: the
+    // row of near-menus reports once, and the row of five menus not at all.
+    let menu = findings_at(
+        &engine,
+        port,
+        "first-viewport-column-overflow-menu.html",
+        "first-viewport-column-overflow",
+        Some((1280, 800)),
+    );
+    assert_cases(&menu, &["flag-near-menus"], &["pass-link-menus"], "first-viewport-column-overflow");
+    assert_eq!(menu.len(), 1, "{menu:?}");
     let contrast = findings(&engine, port, "low-contrast-disabled-control.html", "low-contrast");
-    assert_cases(&contrast, &["flag-enabled"], &["pass-disabled"], "low-contrast");
+    assert_cases(
+        &contrast,
+        &[
+            "flag-enabled",
+            "flag-enabled-label",
+            "flag-enabled-link",
+            "flag-aria-false",
+            "flag-enabled-in-fieldset",
+        ],
+        &[
+            "pass-disabled",
+            "pass-disabled-label",
+            "pass-aria-disabled-link",
+            "pass-aria-disabled-role",
+            "pass-disabled-fieldset",
+        ],
+        "low-contrast",
+    );
+    assert_eq!(contrast.len(), 5, "{contrast:?}");
 }
 
 #[test]
@@ -157,5 +190,17 @@ fn display_text_in_a_generic_box_is_not_body_copy() {
         "body-text-viewport-edge",
         Some((390, 844)),
     );
-    assert_cases(&found, &["flag-body-copy"], &["pass-display-title"], "body-text-viewport-edge");
+    assert_cases(
+        &found,
+        &["flag-body-copy", "flag-copy-18", "flag-lead-20", "flag-copy-23"],
+        &[
+            "pass-display-title",
+            "pass-title-24",
+            "pass-title-flow-root",
+            "pass-hero-line",
+            "pass-copy-with-gutter",
+        ],
+        "body-text-viewport-edge",
+    );
+    assert_eq!(found.len(), 4, "{found:?}");
 }

@@ -196,14 +196,17 @@ fn gradient_paints_only(dom: &dyn Dom, node: ElId, el: ElId, fill: &str) -> bool
             let host = dom.rect(node);
             let r = dom.rect(el);
             // A length stop is in layout pixels; the rects are drawn at the
-            // host's scale.
-            let scale = drawn_scale(dom, node, &host);
-            let start = |l: f64| if len.1 { l * len.0 / 100.0 } else { len.0 * scale };
+            // host's scale, which need not be the same on both axes
+            // (`scaleX(0.5)` moves no vertical stop): a stop along x takes
+            // the width's scale, one along y the height's.
+            let start = |l: f64, scale: f64| if len.1 { l * len.0 / 100.0 } else { len.0 * scale };
+            let across = || start(host.width, drawn_scale(dom, node, &host));
+            let down = || start(host.height, drawn_scale_y(dom, node, &host));
             match side {
-                "right" => r.left >= host.left + start(host.width) - 0.5,
-                "left" => r.right <= host.right - start(host.width) + 0.5,
-                "bottom" => r.top >= host.top + start(host.height) - 0.5,
-                _ => r.bottom <= host.bottom - start(host.height) + 0.5,
+                "right" => r.left >= host.left + across() - 0.5,
+                "left" => r.right <= host.right - across() + 0.5,
+                "bottom" => r.top >= host.top + down() - 0.5,
+                _ => r.bottom <= host.bottom - down() + 0.5,
             }
         }
         None => false,
@@ -572,6 +575,21 @@ fn drawn_scale(dom: &dyn Dom, el: ElId, rect: &Rect) -> f64 {
         return 1.0;
     }
     let scale = rect.width / layout;
+    if scale > 0.05 && scale < 0.95 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// [`drawn_scale`] on the y axis: `el`'s on-screen height over its layout
+/// height, under the same bounds.
+fn drawn_scale_y(dom: &dyn Dom, el: ElId, rect: &Rect) -> f64 {
+    let layout = dom.offset_height(el);
+    if !(layout.is_finite() && layout > 0.0 && rect.height > 0.0) {
+        return 1.0;
+    }
+    let scale = rect.height / layout;
     if scale > 0.05 && scale < 0.95 {
         scale
     } else {
@@ -3704,6 +3722,40 @@ mod tests {
             "linear-gradient(to right, rgba(0, 0, 0, 0) 20%, rgb(243, 243, 243) 20%)",
         );
         assert!(cramped(&d, wrap).is_empty(), "past 20% of the row");
+    }
+
+    /// A length stop is scaled along its own axis. A row drawn at
+    /// `scaleX(0.5)` keeps its height, so a downward gradient that starts
+    /// its fill at 100px still starts it 100px down: a panel that begins
+    /// 75px down lies partly on the page and keeps its edge. Scaling the
+    /// stop by the width's half put the fill at 50px and dropped the finding.
+    #[test]
+    fn a_gradient_length_stop_is_scaled_along_its_own_axis() {
+        let right = vec!["<div> \"main-section\": children flush against bg on right (no inset)"];
+        // The row is laid out 1160 x 300 and drawn 580 x 300; the panel's
+        // top is 75px below the row's.
+        let build = |image: &str, squeeze: (f64, f64)| {
+            let (mut d, row, wrap) = wrapper_in_row("rgba(0, 0, 0, 0)", image);
+            d.set_rect(row, 50.0, 48.0, 580.0, 300.0);
+            d.el_mut(row).offset_width = 580.0 / squeeze.0;
+            d.el_mut(row).offset_height = 300.0 / squeeze.1;
+            (d, wrap)
+        };
+        let down = "linear-gradient(to bottom, rgba(0, 0, 0, 0) 100px, rgb(243, 243, 243) 100px)";
+        let (d, wrap) = build(down, (0.5, 1.0));
+        assert_eq!(cramped(&d, wrap), right, "squeezed across, the fill still starts 100px down");
+        // Squeezed down instead, the same stop is drawn 50px down and the
+        // panel lies wholly on the fill.
+        let (d, wrap) = build(down, (1.0, 0.5));
+        assert!(cramped(&d, wrap).is_empty(), "{:?}", cramped(&d, wrap));
+        // A stop along x takes the width's scale and ignores the height's:
+        // the panel starts 130px in, past a 200px stop drawn at half width
+        // and short of one drawn at full width.
+        let across = "linear-gradient(to right, rgba(0, 0, 0, 0) 200px, rgb(243, 243, 243) 200px)";
+        let (d, wrap) = build(across, (0.5, 1.0));
+        assert!(cramped(&d, wrap).is_empty(), "{:?}", cramped(&d, wrap));
+        let (d, wrap) = build(across, (1.0, 0.5));
+        assert_eq!(cramped(&d, wrap), right, "squeezed down, the fill still starts 200px in");
     }
 
     /// observations-42 row 5, telekom.de: the magenta card sits on a photo
