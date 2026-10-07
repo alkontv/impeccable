@@ -3619,6 +3619,16 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
         });
     }
 
+    // Text covered inside a drawn product mockup is covered on purpose:
+    // suitemigration.com fans five app screens into a deck, and nobody is
+    // meant to read the card behind. Advisory there (decision
+    // r8-t2-occlusion-stacked-mockup); a control in the mockup and covered
+    // page text keep the registry's severity.
+    for f in &mut findings {
+        if f.el.is_some_and(|el| super::decorative_text::box_in_mockup_dom(dom, el)) {
+            f.finding.severity = Some(crate::checks::rules::ADVISORY_SEVERITY.to_string());
+        }
+    }
     findings
 }
 
@@ -4982,6 +4992,46 @@ mod tests {
                 class_selector(&d, sib)
             )
         );
+    }
+
+    /// Decision r8-t2-occlusion-stacked-mockup (advisory): covered text in a
+    /// recognised mockup reports as advisory; covered page text, and a
+    /// control in the mockup, keep the registry's severity.
+    #[test]
+    fn text_occlusion_in_a_mockup_is_advisory() {
+        let build = |tag: &str, frame: &dyn Fn(&mut FakeDom, ElId)| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let base = &[("display", "block"), ("visibility", "visible"), ("opacity", "1"), ("contentVisibility", "visible"), ("position", "static"), ("cssFloat", "none"), ("animationName", "none")][..];
+            let deck = d.add(Some(body), "div");
+            d.set_styles(deck, base);
+            d.set_rect(deck, 0.0, 0.0, 600.0, 400.0);
+            let card = d.add(Some(deck), "div");
+            d.set_styles(card, base);
+            d.set_rect(card, 50.0, 50.0, 400.0, 300.0);
+            frame(&mut d, card);
+            let txt = d.add(Some(card), tag);
+            d.add_text(txt, "Needs attention");
+            d.set_styles(txt, base);
+            d.set_styles(txt, &[("fontSize", "16px"), ("overflow", "visible"), ("overflowX", "visible"), ("overflowY", "visible"), ("clip", "auto"), ("clipPath", "none")]);
+            d.set_rect(txt, 100.0, 100.0, 240.0, 28.0);
+            let front = d.add(Some(deck), "div");
+            d.set_styles(front, base);
+            d.set_styles(front, &[("position", "absolute"), ("backgroundColor", "rgb(20, 20, 20)")]);
+            d.set_rect(front, 100.0, 100.0, 240.0, 28.0);
+            mark_body_descendants(&mut d);
+            let f = check_text_occlusion_dom(&d);
+            assert_eq!(f.len(), 1, "{f:?}");
+            assert_eq!(f[0].el, Some(txt));
+            f[0].finding.severity.clone()
+        };
+        let tilted = |d: &mut FakeDom, card: ElId| {
+            d.set_style(card, "transform", "perspective(900px) rotateX(8deg)");
+        };
+        let advisory = Some(crate::checks::rules::ADVISORY_SEVERITY.to_string());
+        assert_eq!(build("p", &|_, _| {}), None, "covered page text");
+        assert_eq!(build("p", &tilted), advisory, "covered in a tilted device frame");
+        assert_eq!(build("button", &tilted), None, "a control in the mockup");
     }
 
     const PROBE_BASE: &[(&str, &str)] = &[

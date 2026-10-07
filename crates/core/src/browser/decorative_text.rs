@@ -100,9 +100,11 @@ fn marked_mockup(dom: &dyn Dom, el: ElId) -> (bool, bool) {
 
 /// Whether a box sits in a drawn product mockup: under an HTML `role="img"`
 /// outside any `svg`, or in or itself a framed demo by its structure (r5-p26's
-/// three title-bar dots, preview caption, or scaled or tilted device frame).
+/// three title-bar dots, preview caption, or scaled or tilted device frame,
+/// and r8-t1's frame box with a sample caption on it or beside it).
 /// `nested-cards` reports an inner box here as advisory (decision
-/// r6-t3-nested-cards-mockups). A mockup class or id is not read: an
+/// r6-t3-nested-cards-mockups), and `text-occlusion` text covered here
+/// (decision r8-t2-occlusion-stacked-mockup). A mockup class or id is not read: an
 /// `illustration` names a feature tile's picture as often as a mockup, and
 /// r4-p17 keeps such a tile failing.
 pub fn box_in_mockup_dom(dom: &dyn Dom, el: ElId) -> bool {
