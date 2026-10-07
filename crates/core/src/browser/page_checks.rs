@@ -3452,7 +3452,20 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
         let lines = if drawn_tilted(dom, el) {
             None
         } else {
-            dom.text_line_rects(el).filter(|l| !l.is_empty() && l.iter().all(|r| r.all_finite()))
+            // The lines of the victim's own text: a child's line on a row of
+            // its own is the child's text, which the probe already skips.
+            let own = dom.direct_text_rect(el).filter(|r| r.all_finite());
+            dom.text_line_rects(el)
+                .map(|l| {
+                    l.into_iter()
+                        .filter(|r| {
+                            own.as_ref().map_or(true, |o| {
+                                r.top < o.bottom && r.bottom > o.top && r.left < o.right && r.right > o.left
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .filter(|l| !l.is_empty() && l.iter().all(|r| r.all_finite()))
         }
         // A grid none of whose points lands on a line (one centred line in a
         // tall box, between two grid rows) says nothing either way; the
@@ -3846,11 +3859,15 @@ fn is_link_list_rail(dom: &dyn Dom, column: ElId) -> bool {
         .copied()
         .filter(|&a| !links.iter().any(|&o| o != a && dom.contains(o, a)))
         .collect();
-    if outer.len() < 3 {
+    // A link a reader cannot see (a closed mega-menu) is no menu entry, and
+    // its text is not the column's.
+    let (shown, hidden): (Vec<ElId>, Vec<ElId>) = outer.into_iter().partition(|&a| painted_at_capture(dom, a));
+    if shown.len() < 3 {
         return false;
     }
-    let link_chars: f64 = outer.iter().map(|&a| chars(a)).sum();
-    link_chars >= 0.9 * total && link_chars / outer.len() as f64 <= LINK_RAIL_MEAN_CHARS
+    let total = total - hidden.iter().map(|&a| chars(a)).sum::<f64>();
+    let link_chars: f64 = shown.iter().map(|&a| chars(a)).sum();
+    total > 0.0 && link_chars >= 0.9 * total && link_chars / shown.len() as f64 <= LINK_RAIL_MEAN_CHARS
 }
 
 /// JS: checks.mjs#checkFirstViewportColumnOverflowDOM()
@@ -5947,6 +5964,15 @@ mod tests {
             }
             let b = col(&mut d, 640.0);
             match short {
+                "hidden-menu" => {
+                    // Copy, and a closed menu of links nobody sees.
+                    block(&mut d, b, "p", (640.0, 0.0, 600.0, 200.0), "A short column of copy that a reader reads.");
+                    let menu = block(&mut d, b, "ul", (640.0, 200.0, 600.0, 100.0), "");
+                    for label in ["Who We Are", "Leadership", "Careers", "Newsroom", "Investors", "Contact"] {
+                        let a = block(&mut d, menu, "a", (640.0, 200.0, 200.0, 24.0), label);
+                        d.el_mut(a).check_visibility = Some(false);
+                    }
+                }
                 "links" | "prose" => {
                     let ul = block(&mut d, b, "ul", (640.0, 0.0, 600.0, 300.0), "");
                     for (i, label) in ["Who We Are", "Leadership", "Careers", "News"].iter().enumerate() {
@@ -5969,6 +5995,7 @@ mod tests {
         assert_eq!(build("details", "prose"), 0, "a closed one shows its summary");
         assert_eq!(build("copy", "prose"), 1, "a short list of items");
         assert_eq!(build("copy", "links"), 0, "a list of links is a menu");
+        assert_eq!(build("copy", "hidden-menu"), 1, "copy beside a hidden menu");
     }
 
     /// observations-42 row 13. nemonix.app: a padded inline button alone in

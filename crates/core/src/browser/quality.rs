@@ -1612,7 +1612,10 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
             // an edge a reader sees beside the text: the flush form below
             // reads a full-bleed band the same way. nexttv.com.tw's dark
             // copyright band is the phone's full width.
-            let full_bleed_bg = has_bg && viewport_width > 0.0 && rect.width >= viewport_width * 0.94;
+            let full_bleed_bg = has_bg
+                && viewport_width > 0.0
+                && rect.left <= 2.0
+                && rect.right >= viewport_width - 2.0;
             if (has_bg && !full_bleed_bg) || border_visible[3] {
                 h_sides.push(3);
             }
@@ -3577,8 +3580,12 @@ mod tests {
         // A capture with no lines measures the union, as before.
         let (d, p) = page(false, 390.0);
         assert_eq!(cramped(&d, p), vec!["0px of space above and below the text (need ≥4.2px for 14px text)"]);
-        // A band narrower than the window has sides a reader sees.
+        // A band narrower than the window has sides a reader sees, even a
+        // wide one inset from both edges.
         let (d, p) = page(true, 360.0);
+        assert_eq!(cramped(&d, p), vec!["0px of space beside the text (need ≥8.0px for 14px text)"]);
+        let (mut d, p) = page(true, 380.0);
+        d.set_rect(p, 5.0, 1370.0, 380.0, 66.0);
         assert_eq!(cramped(&d, p), vec!["0px of space beside the text (need ≥8.0px for 14px text)"]);
     }
 
