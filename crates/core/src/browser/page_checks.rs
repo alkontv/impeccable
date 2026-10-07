@@ -3796,9 +3796,24 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
         let Some(onto) = overlaps else { continue };
         // How far the fill runs past the line boxes its text sits in: the
         // box's height less one line height per line it spans.
+        // Runs far apart on one row (labels set apart by wide margins) come
+        // back as separate rects and are still one line: a rect starts a new
+        // line only where it begins below the middle of the one before.
         let line_count = dom
             .text_line_rects(el)
-            .map(|l| l.len())
+            .map(|mut l| {
+                l.retain(|r| r.all_finite());
+                l.sort_by(|a, b| a.top.partial_cmp(&b.top).unwrap_or(std::cmp::Ordering::Equal));
+                let mut rows = 0usize;
+                let mut row_middle = f64::NEG_INFINITY;
+                for r in &l {
+                    if r.top >= row_middle {
+                        rows += 1;
+                        row_middle = r.top + r.height / 2.0;
+                    }
+                }
+                rows
+            })
             .filter(|n| *n > 0)
             .unwrap_or(1) as f64;
         let overhang = rect.height - line_count * line_height;
@@ -5244,6 +5259,50 @@ mod tests {
                 class_selector(&d, sib)
             )
         );
+    }
+
+    /// Three labels in one padded inline link, set apart by wide margins,
+    /// come back as three runs on one row. They are one line: the fill
+    /// still hangs 30px past it onto the paragraph below.
+    #[test]
+    fn text_occlusion_inline_leak_counts_rows_not_runs() {
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let wrap = d.add(Some(body), "div");
+        d.set_styles(wrap, PROBE_BASE);
+        d.set_rect(wrap, 0.0, 100.0, 1056.0, 80.0);
+        let btn = d.add(Some(wrap), "a");
+        d.add_text(btn, "Plans   Pricing   Support");
+        d.set_attr(btn, "class", "btn-lg");
+        d.set_styles(btn, PROBE_BASE);
+        d.set_styles(
+            btn,
+            &[
+                ("display", "inline"),
+                ("backgroundColor", "rgb(19, 21, 28)"),
+                ("paddingTop", "15px"),
+                ("paddingBottom", "15px"),
+                ("fontSize", "14px"),
+                ("lineHeight", "20px"),
+            ],
+        );
+        d.set_rect(btn, 100.0, 88.0, 600.0, 50.0);
+        d.set_text_lines(btn, &[(110.0, 105.0, 40.0, 16.0), (330.0, 105.0, 50.0, 16.0), (560.0, 105.0, 55.0, 16.0)]);
+        let sib = d.add(Some(wrap), "p");
+        d.add_text(sib, "The paragraph under the link's line.");
+        d.set_attr(sib, "class", "next");
+        d.set_styles(sib, PROBE_BASE);
+        d.set_rect(sib, 0.0, 125.6, 1056.0, 24.0);
+        mark_body_descendants(&mut d);
+        let f = check_text_occlusion_dom(&d);
+        let leak: Vec<_> = f.iter().filter(|f| f.el == Some(btn)).collect();
+        assert_eq!(leak.len(), 1, "{f:?}");
+        assert!(leak[0].finding.detail.contains("leaks 30px past its line onto"), "{:?}", leak[0].finding.detail);
+        // Two rows of runs are two lines: 50 less 40 leaves 10px.
+        d.set_text_lines(btn, &[(110.0, 95.0, 40.0, 16.0), (330.0, 95.0, 50.0, 16.0), (110.0, 115.0, 55.0, 16.0)]);
+        let f = check_text_occlusion_dom(&d);
+        let leak: Vec<_> = f.iter().filter(|f| f.el == Some(btn)).collect();
+        assert!(leak[0].finding.detail.contains("leaks 10px past its line onto"), "{:?}", leak[0].finding.detail);
     }
 
     const PROBE_BASE: &[(&str, &str)] = &[

@@ -164,8 +164,9 @@ pub fn has_visible_background_boundary(dom: &dyn Dom, el: ElId) -> bool {
 /// paints `fill` itself, so a box of that fill laid on it draws no edge.
 /// freddiemac.com paints its grey cards with `linear-gradient(to right,
 /// transparent 50px, #f3f3f3 50px)` on the row, and the grey text panel in
-/// the row is the same grey. A picture (`url(...)`) or a gradient this
-/// cannot read says nothing, and the walk goes on as before.
+/// the row is the same grey. A picture (`url(...)`), a gradient this cannot
+/// read, or one drawn at a `background-size` that does not fill the box says
+/// nothing, and the walk goes on as before.
 ///
 /// A gradient with transparent stops paints the fill only where those stops
 /// are not: it is read only in the one shape freddiemac.com uses, a single
@@ -174,6 +175,19 @@ pub fn has_visible_background_boundary(dom: &dyn Dom, el: ElId) -> bool {
 fn gradient_paints_only(dom: &dyn Dom, node: ElId, el: ElId, fill: &str) -> bool {
     let image = dom.style(node, "backgroundImage");
     if image.is_empty() || image == "none" || !image.contains("gradient(") || image.contains("url(") {
+        return false;
+    }
+    // A gradient drawn at a size of its own (a 2px rule along one edge:
+    // `background-size: 100% 2px`) paints only that strip, and where is not
+    // read here, so it says nothing about what lies under `el`.
+    let size = dom.style(node, "backgroundSize");
+    let fills_the_box = size.split(',').all(|layer| {
+        matches!(
+            js::trim(layer),
+            "" | "auto" | "auto auto" | "cover" | "contain" | "100%" | "100% auto" | "auto 100%" | "100% 100%"
+        )
+    });
+    if !fills_the_box {
         return false;
     }
     let colors = crate::color::parse_gradient_colors(Some(&image));
@@ -3722,6 +3736,15 @@ mod tests {
             "linear-gradient(to right, rgba(0, 0, 0, 0) 20%, rgb(243, 243, 243) 20%)",
         );
         assert!(cramped(&d, wrap).is_empty(), "past 20% of the row");
+        // The same grey drawn as a 2px rule along the row's edge paints
+        // nothing under the panel; at a size that fills the row it does.
+        let grey = "linear-gradient(rgb(243, 243, 243), rgb(243, 243, 243))";
+        let (mut d, row, wrap) = wrapper_in_row("rgba(0, 0, 0, 0)", grey);
+        assert!(cramped(&d, wrap).is_empty(), "{:?}", cramped(&d, wrap));
+        d.set_style(row, "backgroundSize", "100% 2px");
+        assert_eq!(cramped(&d, wrap), right, "a strip of the fill");
+        d.set_style(row, "backgroundSize", "100% 100%");
+        assert!(cramped(&d, wrap).is_empty(), "{:?}", cramped(&d, wrap));
     }
 
     /// A length stop is scaled along its own axis. A row drawn at
