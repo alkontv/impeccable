@@ -1670,7 +1670,9 @@ fn elements_painting_halo(dom: &dyn Dom, hex: &str) -> Vec<ElId> {
 }
 
 /// The elements whose computed `prop` (`box-shadow` / `text-shadow`) has a
-/// layer in `hex` (lowercase `#rrggbb`).
+/// layer in `hex` (lowercase `#rrggbb`) that is a glow: blurred by more than
+/// 4px, the floor the rule itself reads a glow from. A hard ring in the same
+/// colour (`0 0 0 1px`) is an outline, not the glow the finding names.
 fn elements_casting_glow(dom: &dyn Dom, prop: &str, hex: &str) -> Vec<ElId> {
     let computed = if prop == "text-shadow" { "textShadow" } else { "boxShadow" };
     dom.query_all(None, "*")
@@ -1680,9 +1682,13 @@ fn elements_casting_glow(dom: &dyn Dom, prop: &str, hex: &str) -> Vec<ElId> {
             let value = dom.style(el, computed);
             value != "none"
                 && crate::js_ext_a::split_commas_outside_parens(&value).into_iter().any(|layer| {
-                    crate::checks::rules::find_shadow_color(layer)
-                        .and_then(|info| info.color)
-                        .map_or(false, |c| crate::color::color_to_hex(Some(&c)) == hex)
+                    crate::checks::rules::find_shadow_color(layer).map_or(false, |info| {
+                        let blur = crate::checks::rules::extract_shadow_lengths(layer, Some((info.start, info.end)))
+                            .get(2)
+                            .copied();
+                        blur.is_some_and(|b| b > 4.0)
+                            && info.color.map_or(false, |c| crate::color::color_to_hex(Some(&c)) == hex)
+                    })
                 })
         })
         .collect()
@@ -4315,6 +4321,12 @@ mod page_level_form_tests {
         assert_eq!(page_form_anchor(&d, "radial-halo", "radial-gradient halo (#ffb27a → transparent) on dark page"), None);
         assert_eq!(page_form_anchor(&d, "gradient-text", detail), None);
 
+        // A hard ring in the glow's colour, earlier on the page, is an
+        // outline: with nothing else casting the glow there is no anchor.
+        let ringed = d.add(Some(body), "input");
+        d.set_rect(ringed, 400.0, 480.0, 176.0, 40.0);
+        d.set_style(ringed, "boxShadow", "rgb(124, 106, 247) 0px 0px 0px 1px");
+        assert_eq!(page_form_anchor(&d, "dark-glow", "Zero-offset box-shadow glow (#7c6af7) on dark page"), None);
         let button = d.add(Some(body), "a");
         d.set_rect(button, 400.0, 560.0, 176.0, 56.0);
         d.set_style(button, "boxShadow", "rgb(124, 106, 247) 0px 0px 24px 0px");

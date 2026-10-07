@@ -1762,7 +1762,9 @@ fn capture_post_scan(
 /// [`DRIFT_REMEASURE`] runs out. Every measure replaces the rect, so the rect
 /// is the latest one before the screenshot that follows; one that never came
 /// back is recorded in [`Evidence::element_drift`] with its rect in the
-/// capture. Best-effort: a failed measurement ends the wait.
+/// capture, and one that left the page during the wait joins
+/// [`Evidence::transient`] with no rect. Best-effort: a failed measurement
+/// ends the wait.
 fn remeasure_drifted(
     page: &mut Page<'_>,
     ev: &mut Evidence,
@@ -1781,10 +1783,12 @@ fn remeasure_drifted(
   const vw = window.innerWidth || 0;
   const rects = {{}};
   const back = [];
+  const gone = [];
   for (const s of {sels}) {{
     try {{
       const n = nodes[s];
       const el = resolve(s, identities[s], n ? n[0] : null);
+      if (!el) gone.push(s);
       if (!el || !n) continue;
       const r = el.getBoundingClientRect();
       const rect = [r.x + window.scrollX, r.y + window.scrollY, r.width, r.height];
@@ -1792,7 +1796,7 @@ fn remeasure_drifted(
       if (Math.max(Math.abs(rect[0] - n[1]), Math.abs(rect[1] - n[2])) <= vw) back.push(s);
     }} catch (e) {{}}
   }}
-  return {{ rects, back }};
+  return {{ rects, back, gone }};
 }})()"#,
             resolve = fullpage::RESOLVE_FLAGGED_JS,
             ids = Value::Object(identities.clone()),
@@ -1807,6 +1811,17 @@ fn remeasure_drifted(
         }
         for selector in v.get("back").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
             drifted.retain(|s| s != selector);
+        }
+        // One that left the page while it was away has no box in the
+        // screenshot that follows: its earlier rect and details go, and it
+        // is transient like one the first measure did not find.
+        for selector in v.get("gone").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            drifted.retain(|s| s != selector);
+            ev.element_rects.remove(selector);
+            ev.element_details.remove(selector);
+            if !ev.transient.iter().any(|s| s == selector) {
+                ev.transient.push(selector.to_string());
+            }
         }
     }
     for selector in drifted {

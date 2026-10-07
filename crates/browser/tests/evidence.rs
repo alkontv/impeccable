@@ -459,7 +459,7 @@ fn evidence_measures_the_element_the_scan_flagged_when_an_id_repeats() {
 }
 
 /// round 9: the evidence step measures the element the scan flagged, marks
-/// one that left the page as transient, measures one that moved a viewport
+/// one that left the page (at once, or while it was away) as transient, measures one that moved a viewport
 /// width away again and records it if it stays away, and anchors a page-level
 /// halo declared through `var()` on the element that paints it.
 #[test]
@@ -500,8 +500,15 @@ fn evidence_follows_the_scanned_element_after_the_page_changes() {
 
     // Gone: transient, with no rect.
     let toast = selector("toast-note");
-    assert_eq!(evidence.transient, vec![toast.clone()]);
     assert!(evidence.element_rects.get(&toast).is_none());
+
+    // Away at the first measure and gone by a later one: transient too, and
+    // the rect and details of the first measure do not outlive it.
+    let vanish = selector("vanish-note");
+    assert_eq!(evidence.transient, vec![toast.clone(), vanish.clone()]);
+    assert!(evidence.element_rects.get(&vanish).is_none());
+    assert!(evidence.element_details.get(&vanish).is_none());
+    assert!(evidence.element_drift.get(&vanish).is_none());
 
     // Away for good: the measured rect stands and the drift is recorded.
     let slide = selector("slide-note");

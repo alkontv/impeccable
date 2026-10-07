@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Evidence: the page changes between the scan and the evidence step</title>
   <style>
-    /* Five faint notes, each a real contrast failure at the scan (the typing
+    /* Six faint notes, each a real contrast failure at the scan (the typing
        case has two: the paragraph flagged and the one the class moves to),
        and a page halo declared through a custom property. As soon as the scan's capture
        exists (`window.__impCap`), the page changes the way corpus pages did
@@ -21,6 +21,9 @@
          again, and records the drift when it does not come back.
        - `.bounce-note` slides away, and back 400ms after its box is first
          read: measured again, it is back where the scan had it.
+       - `.vanish-note` slides away, and leaves the document 400ms after its
+         box is first read: measured again, it is gone, so it is transient
+         and keeps no rect from the first measure.
        The `.orb` paints the halo `var(--accent)` resolves to; the page-level
        finding's evidence anchor is that orb. Pinned by
        crates/browser/tests/evidence.rs. */
@@ -40,6 +43,7 @@
   <p class="toast-note faint">Faint note that leaves the page after the scan.</p>
   <div class="track" id="slide-track"><p class="slide-note faint">Faint note in a slide that moves away for good.</p></div>
   <div class="track" id="bounce-track"><p class="bounce-note faint">Faint note in a slide that moves away and back.</p></div>
+  <div class="track" id="vanish-track"><p class="vanish-note faint">Faint note in a slide that moves away and is then removed.</p></div>
   <div class="orb"></div>
   <script>
     const watch = setInterval(() => {
@@ -60,6 +64,18 @@
         if (!window.__bounceRead) {
           window.__bounceRead = true;
           setTimeout(() => { bounce.style.transform = ''; }, 400);
+        }
+        return read.call(this);
+      };
+      // The vanishing note is away at the first measure and removed 400ms
+      // after it, so a later measure finds nothing.
+      const vanishTrack = document.getElementById('vanish-track');
+      vanishTrack.style.transform = 'translateX(-2560px)';
+      const gone = vanishTrack.querySelector('.vanish-note');
+      gone.getBoundingClientRect = function () {
+        if (!window.__vanishRead) {
+          window.__vanishRead = true;
+          setTimeout(() => { gone.remove(); }, 400);
         }
         return read.call(this);
       };
