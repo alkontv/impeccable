@@ -409,8 +409,15 @@ fn numbered_label_holds_media(dom: &dyn Dom, label: ElId) -> bool {
     found(NUMBERED_LABEL_MEDIA_SELECTOR).iter().any(|&el| el != label)
         || found("svg").iter().any(|&svg| {
             dom.parent(svg)
-                .is_some_and(|box_| !js::trim(&super::dom::direct_text(dom, box_)).is_empty())
+                .is_some_and(|box_| holds_number_text(&super::dom::direct_text(dom, box_)))
         })
+}
+
+/// Whether a box's own text is the number a numbered label reads: an icon
+/// beside other words ("Feature") is not beside the number.
+pub fn holds_number_text(own_text: &str) -> bool {
+    let text = js::trim(&collapse_ws(own_text)).to_string();
+    !text.is_empty() && parse_numbered_label_text(Some(&text)).is_some()
 }
 
 fn hits(v: Vec<crate::checks::measures::Finding>) -> Vec<RuleHit> {
@@ -444,17 +451,25 @@ pub fn check_em_dash_overuse_dom(dom: &dyn Dom) -> Vec<RuleHit> {
     hits(check_em_dash_overuse(Some(&text)))
 }
 
-/// `innerText` without the lines a form control's choices put there (an
-/// `<option>` lives only in a `<select>` or a `<datalist>`). A `<select>`
-/// lists each `<option>` on a line of its own, and a currency
+/// `innerText` without the lines a rendered `<select>`'s choices put there.
+/// A `<select>` lists each `<option>` on a line of its own, and a currency
 /// picker that writes "USD", a dash, "US Dollar" a hundred and fifty times
 /// (vaultlykeep.com) holds no sentence. Each choice removes one line whose
 /// collapsed text equals it, so the same words in the copy stay.
 fn without_choice_lines(dom: &dyn Dom, text: &str) -> String {
+    // Only a rendered `<select>` writes its options into `innerText`; a
+    // hidden one, or a `<datalist>`, writes nothing, and its text must not
+    // erase the same words in the copy.
     let mut choices: Vec<String> = dom
         .query_all(None, "option")
         .unwrap_or_default()
         .into_iter()
+        .filter(|&o| {
+            dom.closest(o, "select")
+                .ok()
+                .flatten()
+                .is_some_and(|select| super::element_checks::is_painted_for_browser_rule(dom, select))
+        })
         .map(|o| collapsed_text_content(dom, o))
         .filter(|t| !t.is_empty())
         .collect();
@@ -1023,6 +1038,20 @@ mod tests {
         // The same lines written as copy outside the control still count.
         let prose: Vec<String> = codes.iter().map(|c| format!("{c} — said once more")).collect();
         d.el_mut(body).inner_text = Some(format!("{}\n{}", lines.join("\n"), prose.join("\n")));
+        assert_eq!(check_em_dash_overuse_dom(&d)[0].snippet, "9 em-dashes in body text");
+
+        // A hidden picker writes nothing into `innerText`: its options do
+        // not erase the same words written as copy.
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        let select = d.add(Some(body), "select");
+        d.set_style(select, "display", "none");
+        d.el_mut(select).check_visibility = Some(false);
+        for code in codes {
+            let option = d.add(Some(select), "option");
+            d.add_text(option, &format!("{code} — said once more"));
+        }
+        d.el_mut(body).inner_text = Some(prose.join("\n"));
         assert_eq!(check_em_dash_overuse_dom(&d)[0].snippet, "9 em-dashes in body text");
     }
 

@@ -50,13 +50,28 @@ fn mixed_case_label_still_flags() {
 
 #[test]
 fn typed_capitals_past_label_length_take_the_uppercase_exemption() {
-    // Capitals typed into the markup say what `text-transform` says, at any
-    // length (mialight.app's caption that wraps on a phone).
+    // Capitals typed into the markup say what `text-transform` says, past
+    // the label length (mialight.app's caption that wraps on a phone).
     assert_eq!(
         tracking_hits(
             r#"<p class="run" style="letter-spacing: 0.12em">SUPPORT HOURS RUN MONDAY TO FRIDAY, FROM NINE UNTIL SIX.</p>"#
         ),
         0
+    );
+    // A sentence typed in capitals is still running text: `all-caps-body`
+    // reads only a declared transform, so this rule keeps it.
+    assert_eq!(
+        tracking_hits(
+            r#"<p class="run" style="letter-spacing: 0.12em">SUPPORT HOURS RUN MONDAY TO FRIDAY, FROM NINE IN THE MORNING UNTIL SIX IN THE EVENING.</p>"#
+        ),
+        1
+    );
+    // A transform that lowers the case renders no capitals.
+    assert_eq!(
+        tracking_hits(
+            r#"<p class="run" style="letter-spacing: 0.12em; text-transform: lowercase">SUPPORT HOURS RUN MONDAY TO FRIDAY.</p>"#
+        ),
+        1
     );
     // A long run with one Latin acronym among uncased letters is running text.
     assert_eq!(
@@ -90,7 +105,7 @@ fn fixture_flag_and_pass_cases() {
         .filter(|f| f.antipattern == "wide-tracking")
         .count();
     assert_eq!(
-        tracked, 2,
-        "expected the two flag-column runs and no pass-column label, got {findings:?}"
+        tracked, 3,
+        "expected the three flag-column runs and no pass-column label, got {findings:?}"
     );
 }

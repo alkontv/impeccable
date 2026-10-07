@@ -368,22 +368,58 @@ re!(
 );
 
 /// Whether a `repeating-*-gradient(` whose arguments start `args` tiles at
-/// all. Its pattern repeats every last-stop position, so a last stop at
-/// `100%`, or with no position (which is `100%`), draws the ramp once across
-/// the box: a faceted fill, not stripes (freddiemac.com's tonal chevrons).
-/// A stop list it cannot read, or a lone stop that may be a `var()` holding
-/// a colour and a position, counts as repeating.
+/// all. Its pattern repeats every span from the first stop to the last, so a
+/// ramp that starts at 0 and ends at the full length (`100%`, `360deg`,
+/// `1turn`, or no position, which means the same) draws once across the box:
+/// a faceted fill, not stripes (freddiemac.com's tonal chevrons). A stop
+/// list it cannot read, or a lone stop that may be a `var()` holding a
+/// colour and a position, counts as repeating.
 fn repeating_gradient_repeats(args: &str) -> bool {
-    let stops = crate::checks::css_scan::split_top_level(args, |c| c == ',');
-    if stops.len() < 2 {
+    use crate::checks::css_scan::split_top_level;
+    let stops = split_top_level(args, |c| c == ',');
+    let tokens = |stop: &str| -> Vec<String> {
+        split_top_level(stop, char::is_whitespace).into_iter().map(js::to_lower_case).collect()
+    };
+    // The first argument is a direction or a shape unless it opens with a colour.
+    let first_index = match tokens(stops.first().copied().unwrap_or("")).first() {
+        Some(t) if crate::color::parse_any_color(Some(t)).is_some() => 0,
+        Some(t) if t.contains("var(") => return true,
+        _ => 1,
+    };
+    if stops.len() < first_index + 2 {
         return true;
     }
-    let last = crate::checks::css_scan::split_top_level(stops[stops.len() - 1], char::is_whitespace);
-    match last.as_slice() {
-        [only] => js::to_lower_case(only).contains("var("),
-        [.., position] => js::to_lower_case(position) != "100%",
-        [] => true,
+    let first = tokens(stops[first_index]);
+    let last = tokens(stops[stops.len() - 1]);
+    if last.len() == 1 && last[0].contains("var(") {
+        return true;
     }
+    let starts_at_zero = first.get(1).map_or(true, |p| gradient_position(p) == Some(0.0));
+    let ends_at_full = last.len() == 1 || last.last().is_some_and(|p| gradient_position(p) == Some(1.0));
+    !(starts_at_zero && ends_at_full)
+}
+
+/// A gradient stop position as a fraction of the full length: `0` in any
+/// unit is 0, and `100%`, `360deg`, `400grad` and `1turn` are 1, written
+/// bare or inside `calc()`. Anything else (a length, a `var()`) is `None`.
+fn gradient_position(token: &str) -> Option<f64> {
+    let mut t: String = token.chars().filter(|c| !c.is_whitespace()).collect();
+    while let Some(inner) = t.strip_prefix("calc(").and_then(|r| r.strip_suffix(')')) {
+        t = inner.to_string();
+    }
+    let split = t.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))?;
+    let n: f64 = if split == 0 { return None } else { t[..split].parse().ok()? };
+    if n == 0.0 {
+        return Some(0.0);
+    }
+    let full = match &t[split..] {
+        "%" => 100.0,
+        "deg" => 360.0,
+        "grad" => 400.0,
+        "turn" => 1.0,
+        _ => return None,
+    };
+    Some(n / full)
 }
 
 /// The words that make "X theater" the dismissive idiom: a practice called a
@@ -751,6 +787,14 @@ mod tests {
         assert!(repeating_gradient_repeats("45deg, #eee, #eee 10px, #fafafa 10px, #fafafa 20px)"));
         assert!(repeating_gradient_repeats("to top, transparent 0, transparent calc(25% - 1px), var(--n) calc(25% - 1px), var(--n) 25%)"));
         assert!(repeating_gradient_repeats("45deg, var(--a), var(--stripe))"));
+        // The period runs from the first stop: one at 80% tiles every 20%.
+        assert!(repeating_gradient_repeats("90deg, #000 80%, #fff 90%, #000 100%)"));
+        // A full length written another way still draws once.
+        assert!(!repeating_gradient_repeats("90deg, #000, #fff 100.0%)"));
+        assert!(!repeating_gradient_repeats("90deg, #000 0%, #fff calc(100%))"));
+        assert!(!repeating_gradient_repeats("from 0deg, #000, #fff 1turn)"));
+        assert!(!repeating_gradient_repeats("#000, #fff)"));
+        assert!(repeating_gradient_repeats("#000, #fff 50%)"));
         let ids = |css: &str| -> Vec<String> {
             check_html_patterns(&format!("<style>{css}</style>"), None).into_iter().map(|f| f.id).collect()
         };

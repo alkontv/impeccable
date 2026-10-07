@@ -794,18 +794,20 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
                     // Wide tracking is the standard treatment for an
                     // uppercase eyebrow, label or button. `text-transform`
                     // says so outright, and capitals typed into the markup
-                    // take the same exemption at any length when every
-                    // letter is one. A run inside the label length keeps the
-                    // looser reading it had (a CJK label with a Latin
-                    // acronym); this engine has no layout, so it counts as
-                    // one line.
-                    let own = el.text_content();
-                    let own = js::trim(&own);
-                    let every_letter_caps = is_capitalized_run(own)
+                    // take the same exemption under a sentence's length
+                    // when every letter is one and no transform lowers it.
+                    // A run inside the label length keeps the looser reading
+                    // it had (a CJK label with a Latin acronym); this engine
+                    // has no layout, so it counts as one line.
+                    let own = collapse_ws(js::trim(&el.text_content()));
+                    let every_letter_caps = utf16_len(&own) < ALL_CAPS_LONG_RUN
+                        && is_capitalized_run(&own)
                         && own.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase());
+                    let lowered = matches!(sv_opt(style, "textTransform"), Some("lowercase" | "capitalize"));
                     let caps_label = sv_opt(style, "textTransform") == Some("uppercase")
-                        || every_letter_caps
-                        || (text_len <= TRACKED_LABEL_MAX_CHARS && is_capitalized_run(own));
+                        || (!lowered
+                            && (every_letter_caps
+                                || (text_len <= TRACKED_LABEL_MAX_CHARS && is_capitalized_run(&own))));
                     if !caps_label {
                         findings.push(RuleHit::new(
                             "wide-tracking",

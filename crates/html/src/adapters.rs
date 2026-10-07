@@ -333,8 +333,9 @@ pub fn collect_numbered_section_label_candidates(
                 .query_selector(impeccable_core::browser::text_collectors::NUMBERED_LABEL_MEDIA_SELECTOR)
                 .is_some()
             || label.query_selector_all("svg").iter().any(|svg| {
-                svg.parent_element()
-                    .is_some_and(|box_| !js::trim(&box_.direct_text()).is_empty())
+                svg.parent_element().is_some_and(|box_| {
+                    impeccable_core::browser::text_collectors::holds_number_text(&box_.direct_text())
+                })
             })
         {
             continue;
