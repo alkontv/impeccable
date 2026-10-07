@@ -21,14 +21,15 @@ const PROBE_JS: &str = include_str!("../../../browser-bundle/10-probe.js");
 const PICTURE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="navy"/></svg>"#;
 
 /// A loaded image, one whose source is a 404, a `picture` whose chosen
-/// source is a 404, a lazy image far below the fold, and two elements that
-/// are not an `img`.
+/// source is a 404, a lazy image far below the fold, and three elements that
+/// are not an HTML `img`.
 const PAGE: &str = r#"<!doctype html><html><body style="margin:0;height:30000px;position:relative">
 <img id="loaded" src="/ok.svg" alt="Loaded">
 <img id="failed" src="/gone.png" alt="Failed" width="200" height="100">
 <picture><source srcset="/gone.webp" type="image/webp"><img id="picture" src="/ok.svg" alt="Picture"></picture>
 <img id="lazy" loading="lazy" src="/later.svg" alt="Lazy" width="200" height="100" style="position:absolute;top:25000px;left:0">
 <input id="input" type="image" src="/ok.svg" alt="Go">
+<svg width="40" height="30"><image id="svgimage" href="/ok.svg" width="40" height="30"/></svg>
 <div id="plain">Text</div>
 </body></html>"#;
 
@@ -57,7 +58,7 @@ fn the_capture_and_the_page_probe_agree_on_image_load_state() {
     let mut page = browser.new_page().unwrap();
     page.goto(&format!("{origin}/"), "load", Duration::from_secs(15)).unwrap();
 
-    const IDS: [&str; 6] = ["loaded", "failed", "picture", "lazy", "input", "plain"];
+    const IDS: [&str; 7] = ["loaded", "failed", "picture", "lazy", "input", "svgimage", "plain"];
 
     // The live page's probe: `[natural size, complete, currentSrc]` per id,
     // with the sentinels it hands the wasm side spelled as JSON null.
@@ -91,7 +92,9 @@ fn the_capture_and_the_page_probe_agree_on_image_load_state() {
         "picture": [[0.0, 0.0], true, format!("{origin}/gone.webp")],
         // Never requested: no pixels either, but nothing selected and not complete.
         "lazy": [[0.0, 0.0], false, ""],
+        // Neither interface has a natural size or `complete`.
         "input": [null, null, null],
+        "svgimage": [null, null, null],
         "plain": [null, null, null],
     });
     // Typed, so a whole number reads the same from either side.

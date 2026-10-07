@@ -255,22 +255,29 @@ pub trait Dom {
 
     // ── image load state ──────────────────────────────────────────────
     //
-    // What tells a loaded `<img>` from one whose source failed. All three
+    // What tells a loaded `<img>` from one whose source failed, read
+    // together: no one of them is a load status on its own. All three
     // answer `None` for anything that is not an `HTMLImageElement` (an
     // `input type=image` and an SVG `<image>` have no `naturalWidth` or
     // `complete` on their interfaces) and from a probe that cannot say. The
     // `loading` attribute is [`Dom::attr`]`(el, "loading")`.
-    /// `[img.naturalWidth, img.naturalHeight]`: the decoded image's own size
-    /// in CSS pixels, `(0, 0)` while nothing has decoded (not requested yet,
-    /// still loading, or failed; [`Dom::image_complete`] separates those).
+    /// `(img.naturalWidth, img.naturalHeight)`: the image's own size in CSS
+    /// pixels, known as soon as the browser has read the image's dimensions,
+    /// which can be before the fetch has finished. `(0, 0)` while it has
+    /// none: not requested yet, nothing received yet, or failed. The size
+    /// alone does not say which; [`Dom::image_complete`] says whether the
+    /// browser is still waiting.
     fn image_natural_size(&self, _el: ElId) -> Option<(f64, f64)> {
         None
     }
-    /// `img.complete`: the image is not waiting on a fetch. True once it
-    /// decoded, true once the fetch failed, and true with no source at all;
-    /// false while the fetch is pending, which includes a `loading=lazy`
-    /// image the browser has not requested yet. `None` where the probe did
-    /// not read it (a snapshot recorded before the capture did).
+    /// `img.complete`: the browser is not waiting on a fetch for this image.
+    /// It reports that the request is over, not that an image came of it:
+    /// true once the image is fully available, true once the fetch failed,
+    /// and true with no source at all; false while a fetch is pending, which
+    /// includes a `loading=lazy` image the browser has not requested yet.
+    /// A failed image is the one that is complete with a selected source
+    /// ([`Dom::image_current_src`]) and a natural size of 0. `None` where the
+    /// probe did not read it (a snapshot recorded before the capture did).
     fn image_complete(&self, _el: ElId) -> Option<bool> {
         None
     }
