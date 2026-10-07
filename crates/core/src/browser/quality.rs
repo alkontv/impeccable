@@ -195,7 +195,10 @@ fn gradient_paints_only(dom: &dyn Dom, node: ElId, el: ElId, fill: &str) -> bool
         Some((side, len)) => {
             let host = dom.rect(node);
             let r = dom.rect(el);
-            let start = |l: f64| if len.1 { l * len.0 / 100.0 } else { len.0 };
+            // A length stop is in layout pixels; the rects are drawn at the
+            // host's scale.
+            let scale = drawn_scale(dom, node, &host);
+            let start = |l: f64| if len.1 { l * len.0 / 100.0 } else { len.0 * scale };
             match side {
                 "right" => r.left >= host.left + start(host.width) - 0.5,
                 "left" => r.right <= host.right - start(host.width) + 0.5,
@@ -1612,10 +1615,17 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
             // an edge a reader sees beside the text: the flush form below
             // reads a full-bleed band the same way. nexttv.com.tw's dark
             // copyright band is the phone's full width.
+            // The window's width less a classic scrollbar, which a 100%-wide
+            // band stops at.
+            let layout_width = dom
+                .document_element()
+                .map(|h| dom.client_width(h))
+                .filter(|w| *w > 0.0 && *w <= viewport_width)
+                .unwrap_or(viewport_width);
             let full_bleed_bg = has_bg
                 && viewport_width > 0.0
                 && rect.left <= 2.0
-                && rect.right >= viewport_width - 2.0;
+                && rect.right >= layout_width - 2.0;
             if (has_bg && !full_bleed_bg) || border_visible[3] {
                 h_sides.push(3);
             }
@@ -3584,6 +3594,11 @@ mod tests {
         // wide one inset from both edges.
         let (d, p) = page(true, 360.0);
         assert_eq!(cramped(&d, p), vec!["0px of space beside the text (need ≥8.0px for 14px text)"]);
+        // A 100% band stops at a classic scrollbar, short of the window.
+        let (mut d, p) = page(true, 375.0);
+        let html = d.document_element.unwrap();
+        d.el_mut(html).client_width = 375.0;
+        assert!(cramped(&d, p).is_empty(), "{:?}", cramped(&d, p));
         let (mut d, p) = page(true, 380.0);
         d.set_rect(p, 5.0, 1370.0, 380.0, 66.0);
         assert_eq!(cramped(&d, p), vec!["0px of space beside the text (need ≥8.0px for 14px text)"]);
