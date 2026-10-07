@@ -2331,6 +2331,7 @@ fn ai_palette_gradient_hit(
     let mut in_band = 0usize;
     let mut bridge = 0usize;
     let mut tell: Option<TellHue> = None;
+    let mut purple = false;
     for c in &stops {
         // A stop DESIGN.md declares was picked; it is not the default
         // palette and takes no part in the count.
@@ -2346,6 +2347,7 @@ fn ai_palette_gradient_hit(
         painted += 1;
         if let Some(band) = TellHue::of(c) {
             in_band += 1;
+            purple |= band == TellHue::Purple;
             if tell.is_none() {
                 tell = Some(band);
             }
@@ -2363,8 +2365,9 @@ fn ai_palette_gradient_hit(
     // than half its stops: one cyan stop beside one mint green is a tie, a
     // teal-and-green brand wash (weborama.com's hero glow). A tie stands
     // only where the other stops are the blues between the two bands, the
-    // stock blue-to-cyan ramp. A violet tie keeps the reading it had.
-    if tell == TellHue::Cyan && in_band * 2 == painted && bridge < painted - in_band {
+    // stock blue-to-cyan ramp. A tie with a violet stop in it keeps the
+    // reading it had, whichever of its stops comes first.
+    if !purple && in_band * 2 == painted && bridge < painted - in_band {
         return None;
     }
     Some((
@@ -6303,6 +6306,29 @@ mod tests {
             "linear-gradient(90deg, rgb(168, 85, 247), rgb(130, 255, 247))",
         );
         assert_eq!(palette_hits(&d, hero).len(), 1);
+    }
+
+    /// A tie (half the painted stops in band) falls only when every in-band
+    /// stop is cyan. With a violet stop in it the ramp reports whichever
+    /// stop comes first: cyan, violet, emerald, amber and its reverse.
+    #[test]
+    fn ai_palette_tie_with_a_violet_stop_reports_in_either_order() {
+        let (mut d, body) = page();
+        let forward = gradient_surface(
+            &mut d,
+            body,
+            "linear-gradient(90deg, rgb(6, 182, 212), rgb(124, 58, 237), rgb(16, 185, 129), rgb(245, 158, 11))",
+        );
+        assert_eq!(palette_hits(&d, forward).len(), 1, "cyan first");
+        let reverse = gradient_surface(
+            &mut d,
+            body,
+            "linear-gradient(90deg, rgb(245, 158, 11), rgb(16, 185, 129), rgb(124, 58, 237), rgb(6, 182, 212))",
+        );
+        assert_eq!(palette_hits(&d, reverse).len(), 1, "violet first");
+        // A cyan stop tied with a mint green one, and no violet: a brand wash.
+        let wash = gradient_surface(&mut d, body, "linear-gradient(90deg, rgb(6, 182, 212), rgb(16, 185, 129))");
+        assert!(palette_hits(&d, wash).is_empty(), "{:?}", palette_hits(&d, wash));
     }
 
     #[test]

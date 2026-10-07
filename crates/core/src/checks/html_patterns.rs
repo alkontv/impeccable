@@ -374,7 +374,13 @@ re!(
 /// a faceted fill, not stripes (freddiemac.com's tonal chevrons). A stop
 /// list it cannot read, or a lone stop that may be a `var()` holding a
 /// colour and a position, counts as repeating.
-fn repeating_gradient_repeats(args: &str) -> bool {
+///
+/// The full length of a radial gradient is its ending shape, and only the
+/// default one (`farthest-corner`) reaches every corner of the box. Under
+/// `closest-side`, `closest-corner`, `farthest-side` or a stated size the
+/// rings go on past `100%`, so a `radial` ramp with any size but the default
+/// counts as repeating.
+fn repeating_gradient_repeats(args: &str, radial: bool) -> bool {
     use crate::checks::css_scan::split_top_level;
     let stops = split_top_level(args, |c| c == ',');
     let tokens = |stop: &str| -> Vec<String> {
@@ -393,6 +399,16 @@ fn repeating_gradient_repeats(args: &str) -> bool {
     };
     if stops.len() < first_index + 2 {
         return true;
+    }
+    if radial && first_index == 1 {
+        let shape = tokens(stops[0]);
+        let sized = shape
+            .iter()
+            .take_while(|t| t.as_str() != "at")
+            .any(|t| !matches!(t.as_str(), "circle" | "ellipse" | "farthest-corner"));
+        if sized {
+            return true;
+        }
     }
     let first = tokens(stops[first_index]);
     let last = tokens(stops[stops.len() - 1]);
@@ -739,7 +755,10 @@ pub fn check_html_patterns_with(
     // --- Generated-UI tells: repeating-gradient stripes ---
     if let Some(sm) = REPEATING_GRADIENT_RE
         .find_iter(style_text)
-        .find(|m| repeating_gradient_repeats(&style_text[m.end()..]))
+        .find(|m| {
+            let radial = js::to_lower_case(m.as_str()).contains("radial");
+            repeating_gradient_repeats(&style_text[m.end()..], radial)
+        })
     {
         findings.push(pf(
             "repeating-stripes-gradient",
@@ -789,26 +808,37 @@ mod tests {
     /// has no position, draws its ramp once and never tiles.
     #[test]
     fn a_repeating_gradient_that_never_repeats_is_not_stripes() {
-        assert!(!repeating_gradient_repeats("147deg, rgb(3, 46, 109), rgb(3, 46, 109) 40%, rgb(2, 29, 69) 80%, rgb(2, 29, 69)), none"));
-        assert!(!repeating_gradient_repeats("90deg, #eee, #ddd 100%)"));
-        assert!(repeating_gradient_repeats("45deg, #eee, #eee 10px, #fafafa 10px, #fafafa 20px)"));
-        assert!(repeating_gradient_repeats("to top, transparent 0, transparent calc(25% - 1px), var(--n) calc(25% - 1px), var(--n) 25%)"));
-        assert!(repeating_gradient_repeats("45deg, var(--a), var(--stripe))"));
+        assert!(!repeating_gradient_repeats("147deg, rgb(3, 46, 109), rgb(3, 46, 109) 40%, rgb(2, 29, 69) 80%, rgb(2, 29, 69)), none", false));
+        assert!(!repeating_gradient_repeats("90deg, #eee, #ddd 100%)", false));
+        assert!(repeating_gradient_repeats("45deg, #eee, #eee 10px, #fafafa 10px, #fafafa 20px)", false));
+        assert!(repeating_gradient_repeats("to top, transparent 0, transparent calc(25% - 1px), var(--n) calc(25% - 1px), var(--n) 25%)", false));
+        assert!(repeating_gradient_repeats("45deg, var(--a), var(--stripe))", false));
         // The period runs from the first stop: one at 80% tiles every 20%.
-        assert!(repeating_gradient_repeats("90deg, #000 80%, #fff 90%, #000 100%)"));
+        assert!(repeating_gradient_repeats("90deg, #000 80%, #fff 90%, #000 100%)", false));
         // A full length written another way still draws once.
-        assert!(!repeating_gradient_repeats("90deg, #000, #fff 100.0%)"));
-        assert!(!repeating_gradient_repeats("90deg, #000 0%, #fff calc(100%))"));
-        assert!(!repeating_gradient_repeats("from 0deg, #000, #fff 1turn)"));
-        assert!(!repeating_gradient_repeats("#000, #fff)"));
-        assert!(repeating_gradient_repeats("#000, #fff 50%)"));
+        assert!(!repeating_gradient_repeats("90deg, #000, #fff 100.0%)", false));
+        assert!(!repeating_gradient_repeats("90deg, #000 0%, #fff calc(100%))", false));
+        assert!(!repeating_gradient_repeats("from 0deg, #000, #fff 1turn)", false));
+        assert!(!repeating_gradient_repeats("#000, #fff)", false));
+        assert!(repeating_gradient_repeats("#000, #fff 50%)", false));
         // A unitless 0 is a zero, and a keyword colour opens the stop list.
-        assert!(!repeating_gradient_repeats("90deg, #000 0, #fff 100%)"));
-        assert!(!repeating_gradient_repeats("transparent, #fff 100%)"));
-        assert!(!repeating_gradient_repeats("currentColor 0, #fff)"));
+        assert!(!repeating_gradient_repeats("90deg, #000 0, #fff 100%)", false));
+        assert!(!repeating_gradient_repeats("transparent, #fff 100%)", false));
+        assert!(!repeating_gradient_repeats("currentColor 0, #fff)", false));
+        // A radial ramp to 100% covers the box only at the default size:
+        // rings sized to the closest side, or to a stated radius, go on.
+        assert!(!repeating_gradient_repeats("circle, #000 0%, #fff 100%)", true));
+        assert!(!repeating_gradient_repeats("#000, #fff)", true));
+        assert!(!repeating_gradient_repeats("ellipse farthest-corner at 20% 30%, #000, #fff 100%)", true));
+        assert!(repeating_gradient_repeats("circle closest-side, #000 0%, #fff 100%)", true));
+        assert!(repeating_gradient_repeats("closest-corner at 50% 50%, #000, #fff)", true));
+        assert!(repeating_gradient_repeats("circle 40px at center, #000, #fff 100%)", true));
+        assert!(repeating_gradient_repeats("farthest-side, #000, #fff 100%)", true));
         let ids = |css: &str| -> Vec<String> {
             check_html_patterns(&format!("<style>{css}</style>"), None).into_iter().map(|f| f.id).collect()
         };
+        let rings = ".r{background:repeating-radial-gradient(circle closest-side,#000 0%,#fff 100%)}";
+        assert!(ids(rings).contains(&"repeating-stripes-gradient".to_string()));
         let once = ".a{background:repeating-linear-gradient(147deg,#032e6d,#032e6d 40%,#021d45)}";
         let tiles = ".b{background:repeating-linear-gradient(45deg,#eee,#eee 10px,#fafafa 10px,#fafafa 20px)}";
         assert!(!ids(once).contains(&"repeating-stripes-gradient".to_string()));
