@@ -1609,8 +1609,60 @@ fn radial_halo_page_form_stands(dom: &dyn Dom, item: &PatternItem, root_dark: Op
             .unwrap_or_default(),
     };
     let surfaces: Vec<Option<crate::color::Rgba>> = elements.iter().map(|&el| surface(el)).collect();
+    // A halo is light thrown on a darker surface. A stop no lighter than
+    // every surface it was read on is a vignette in the surface's own tone
+    // (weborama.com's dark green wash on its dark green band), not a glow.
+    // An unread surface keeps the finding.
+    let halo = HALO_COLOR_RE
+        .captures(&item.finding.detail)
+        .and_then(|m| crate::color::parse_any_color(Some(&m[1])));
+    if let Some(halo) = halo {
+        let halo_luminance = crate::color::relative_luminance(&halo);
+        if !surfaces.is_empty()
+            && surfaces.iter().all(|s| {
+                s.as_ref()
+                    .is_some_and(|c| crate::color::relative_luminance(c) >= halo_luminance)
+            })
+        {
+            return false;
+        }
+    }
     dark_claim_stands(root_dark, &surfaces)
 }
+
+/// The element a page-level stylesheet finding (reported on `body`) can be
+/// shown on: the first element painted at capture whose computed style
+/// carries the declaration the finding names, a radial-gradient halo or a
+/// glow in the finding's colour. Computed values have every `var()`
+/// resolved, so this finds the element a declaration spelled through a
+/// custom property paints on (`.g1 { background: radial-gradient(circle,
+/// var(--accent) 0%, transparent 70%) }`), which a reader of the stylesheet
+/// text cannot. Evidence only: the finding still names the page. `None` for
+/// other rules and when no painted element carries it.
+pub fn page_form_anchor(dom: &dyn Dom, rule: &str, detail: &str) -> Option<ElId> {
+    let mut carriers = match rule {
+        "radial-halo" => HALO_COLOR_RE
+            .captures(detail)
+            .map(|m| elements_painting_halo(dom, &crate::js::to_lower_case(&m[1])))?,
+        "dark-glow" => glow_declaration(detail).map(|(prop, hex)| elements_casting_glow(dom, &prop, &hex))?,
+        _ => return None,
+    };
+    // A halo fades to transparent: an opaque radial fill in the same colour
+    // earlier in the page is not the declaration the finding names, so the
+    // gradients that fade out go first.
+    if rule == "radial-halo" {
+        carriers.sort_by_key(|&el| !FADES_OUT_RE.is_match(&dom.style(el, "backgroundImage")));
+    }
+    carriers
+        .into_iter()
+        .find(|&el| super::painted::unpainted_for(dom, el, super::painted::PaintGate::Box).is_none())
+}
+
+/// A computed gradient with a fully transparent stop (`transparent`
+/// computes to `rgba(0, 0, 0, 0)`).
+static FADES_OUT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"rgba\([^)]*,\s*0(?:\.0+)?\s*\)|transparent").expect("FADES_OUT_RE")
+});
 
 static HALO_COLOR_RE: once_cell::sync::Lazy<regex::Regex> =
     once_cell::sync::Lazy::new(|| regex::Regex::new(r"halo \((#[0-9a-fA-F]+) ").expect("HALO_COLOR_RE"));
@@ -1632,7 +1684,9 @@ fn elements_painting_halo(dom: &dyn Dom, hex: &str) -> Vec<ElId> {
 }
 
 /// The elements whose computed `prop` (`box-shadow` / `text-shadow`) has a
-/// layer in `hex` (lowercase `#rrggbb`).
+/// layer in `hex` (lowercase `#rrggbb`) that is a glow: blurred by more than
+/// 4px, the floor the rule itself reads a glow from. A hard ring in the same
+/// colour (`0 0 0 1px`) is an outline, not the glow the finding names.
 fn elements_casting_glow(dom: &dyn Dom, prop: &str, hex: &str) -> Vec<ElId> {
     let computed = if prop == "text-shadow" { "textShadow" } else { "boxShadow" };
     dom.query_all(None, "*")
@@ -1642,9 +1696,13 @@ fn elements_casting_glow(dom: &dyn Dom, prop: &str, hex: &str) -> Vec<ElId> {
             let value = dom.style(el, computed);
             value != "none"
                 && crate::js_ext_a::split_commas_outside_parens(&value).into_iter().any(|layer| {
-                    crate::checks::rules::find_shadow_color(layer)
-                        .and_then(|info| info.color)
-                        .map_or(false, |c| crate::color::color_to_hex(Some(&c)) == hex)
+                    crate::checks::rules::find_shadow_color(layer).map_or(false, |info| {
+                        let blur = crate::checks::rules::extract_shadow_lengths(layer, Some((info.start, info.end)))
+                            .get(2)
+                            .copied();
+                        blur.is_some_and(|b| b > 4.0)
+                            && info.color.map_or(false, |c| crate::color::color_to_hex(Some(&c)) == hex)
+                    })
                 })
         })
         .collect()
@@ -2718,11 +2776,12 @@ mod tests {
         );
     }
 
-    /// The page-level forms of bounce-easing, dark-glow and pulsing-dot name
-    /// the selector their declaration sits in. When that selector matches
-    /// only elements nobody sees (centene.com's loader at `display: none`,
-    /// tryrote.com's stepper rail not drawn at 390px), the form reports
-    /// nothing; a rule outside the list keeps base behavior.
+    /// The page-level forms of bounce-easing, dark-glow, pulsing-dot and
+    /// repeating-stripes-gradient name the selector their declaration sits
+    /// in. When that selector matches only elements nobody sees (centene.com's
+    /// loader at `display: none`, tryrote.com's stepper rail not drawn at
+    /// 390px, ascenix.co's chart gridlines in a closed panel), the form
+    /// reports nothing; a rule outside the list keeps base behavior.
     #[test]
     fn page_forms_of_gated_rules_need_a_painted_match() {
         let run = |hidden: bool| {
@@ -2737,7 +2796,13 @@ mod tests {
                 d.set_style(wrap, "display", "none");
                 d.el_mut(wrap).check_visibility = Some(false);
             }
-            for (selector, y) in [(".loader", 100.0), (".bar", 160.0), (".rail .node", 220.0), (".stripes", 280.0)] {
+            for (selector, y) in [
+                (".loader", 100.0),
+                (".bar", 160.0),
+                (".rail .node", 220.0),
+                (".stripes", 280.0),
+                (".blob", 340.0),
+            ] {
                 let el = d.add(Some(wrap), "div");
                 d.add_selector(el, selector);
                 d.set_rect(el, 0.0, y, 200.0, 40.0);
@@ -2751,15 +2816,19 @@ mod tests {
 .rail .node::after{content:\"\";display:block;width:7px;height:7px;border-radius:50%;background:#22c55e;animation:pulse 2.4s ease-out infinite}\
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}\
 .stripes{background:repeating-linear-gradient(45deg,#000 0 2px,#fff 2px 4px)}\
-</style></head><body><div><div class=\"loader\"></div><div class=\"bar\"></div><div class=\"rail\"><div class=\"node\"></div></div><div class=\"stripes\"></div></div></body></html>"
+.blob{clip-path:polygon(50% 0%, 61% 8%, 74% 6%, 82% 16%, 94% 22%, 96% 36%, 100% 50%, 92% 63%, 88% 78%, 74% 88%, 60% 100%, 46% 96%)}\
+</style></head><body><div><div class=\"loader\"></div><div class=\"bar\"></div><div class=\"rail\"><div class=\"node\"></div></div><div class=\"stripes\"></div><div class=\"blob\"></div></div></body></html>"
                 .to_string();
             let mut ids: Vec<String> = scoped_html_pattern_findings(&d).into_iter().map(|f| f.type_).collect();
             ids.sort();
             ids.dedup();
             ids
         };
-        assert_eq!(run(false), vec!["bounce-easing", "dark-glow", "pulsing-dot", "repeating-stripes-gradient"]);
-        assert_eq!(run(true), vec!["repeating-stripes-gradient"]);
+        assert_eq!(
+            run(false),
+            vec!["bounce-easing", "dark-glow", "organic-clip-path", "pulsing-dot", "repeating-stripes-gradient"]
+        );
+        assert_eq!(run(true), vec!["organic-clip-path"]);
     }
 
     /// te.eg: `#5c2d91` section headings under a `#5c2d91` nav bar. The
@@ -4212,6 +4281,53 @@ mod page_level_form_tests {
         assert_eq!(details(&scan(&d), "radial-halo"), vec![(body, reported)]);
     }
 
+    /// round 9 (nemonix.app, emotionalcomputing.co.uk): a halo declared
+    /// through `var()` is reported on `body`, and its evidence anchor is the
+    /// painted element whose computed background carries it.
+    #[test]
+    fn a_page_form_is_anchored_on_the_painted_element_that_carries_it() {
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        let gradient = "radial-gradient(circle, rgb(124, 106, 247) 0%, rgba(0, 0, 0, 0) 70%)";
+        // A carrier with no box, first in the document, is passed over.
+        let closed = d.add(Some(body), "div");
+        d.set_style(closed, "backgroundImage", gradient);
+        let orb = d.add(Some(body), "div");
+        d.set_rect(orb, 100.0, 40.0, 700.0, 700.0);
+        d.set_style(orb, "backgroundImage", gradient);
+        let detail = "radial-gradient halo (#7c6af7 → transparent) on dark page";
+        assert_eq!(page_form_anchor(&d, "radial-halo", detail), Some(orb));
+        // An opaque radial fill in the same colour, earlier on the page, is
+        // not the halo: the gradient that fades out is.
+        {
+            let mut d = FakeDom::new();
+            let (_html, body) = d.with_page();
+            let badge = d.add(Some(body), "span");
+            d.set_rect(badge, 20.0, 20.0, 80.0, 80.0);
+            d.set_style(badge, "backgroundImage", "radial-gradient(circle, rgb(124, 106, 247) 0%, rgb(60, 40, 200) 100%)");
+            let orb = d.add(Some(body), "div");
+            d.set_rect(orb, 100.0, 40.0, 700.0, 700.0);
+            d.set_style(orb, "backgroundImage", gradient);
+            assert_eq!(page_form_anchor(&d, "radial-halo", detail), Some(orb));
+        }
+        assert_eq!(page_form_anchor(&d, "radial-halo", "radial-gradient halo (#ffb27a → transparent) on dark page"), None);
+        assert_eq!(page_form_anchor(&d, "gradient-text", detail), None);
+
+        // A hard ring in the glow's colour, earlier on the page, is an
+        // outline: with nothing else casting the glow there is no anchor.
+        let ringed = d.add(Some(body), "input");
+        d.set_rect(ringed, 400.0, 480.0, 176.0, 40.0);
+        d.set_style(ringed, "boxShadow", "rgb(124, 106, 247) 0px 0px 0px 1px");
+        assert_eq!(page_form_anchor(&d, "dark-glow", "Zero-offset box-shadow glow (#7c6af7) on dark page"), None);
+        let button = d.add(Some(body), "a");
+        d.set_rect(button, 400.0, 560.0, 176.0, 56.0);
+        d.set_style(button, "boxShadow", "rgb(124, 106, 247) 0px 0px 24px 0px");
+        assert_eq!(
+            page_form_anchor(&d, "dark-glow", "Zero-offset box-shadow glow (#7c6af7) on dark page"),
+            Some(button)
+        );
+    }
+
     #[test]
     fn a_halo_with_no_rule_reads_the_elements_that_paint_it() {
         let reported = "radial-gradient halo (#211dff → transparent) on dark page".to_string();
@@ -4239,6 +4355,32 @@ mod page_level_form_tests {
         assert_eq!(details(&scan(&d), "radial-halo"), vec![(body, reported)]);
         let (d, _body) = build("rgb(246, 246, 246)");
         assert!(details(&scan(&d), "radial-halo").is_empty());
+    }
+
+    #[test]
+    fn a_halo_no_lighter_than_its_surface_is_a_vignette() {
+        // weborama.com: a dark green wash on a dark green band of a light page.
+        let build = |band_fill: &str| {
+            let halo = ".wash{background:radial-gradient(circle at 50% 0%,#012d2a 0%,transparent 70%)}";
+            let (mut d, body) = page(&format!(".band{{background:#0f3d38}}{halo}"));
+            d.set_style(body, "backgroundColor", "rgb(255, 255, 255)");
+            let band = d.add(Some(body), "section");
+            d.set_rect(band, 0.0, 0.0, 1280.0, 600.0);
+            d.set_style(band, "backgroundColor", band_fill);
+            let wash = d.add(Some(band), "div");
+            d.add_selector(wash, ".wash");
+            d.set_rect(wash, 0.0, 0.0, 1280.0, 600.0);
+            (d, body)
+        };
+        // The stop is darker than the band it sits on: no halo.
+        let (d, _) = build("rgb(15, 61, 56)");
+        assert!(details(&scan(&d), "radial-halo").is_empty());
+        // The same stop on a near-black band is lighter than it: a halo.
+        let (d, body) = build("rgb(0, 0, 0)");
+        assert_eq!(
+            details(&scan(&d), "radial-halo"),
+            vec![(body, "radial-gradient halo (#012d2a → transparent) on dark page".to_string())]
+        );
     }
 
     #[test]
