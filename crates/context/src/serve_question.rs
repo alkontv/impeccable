@@ -2850,8 +2850,13 @@ mod tests {
         (code, out)
     }
 
+    /// The NEXT visualize line of `out`, the skill path without the drive
+    /// letter Windows resolves `/skill` under.
     fn next_line(out: &str) -> String {
-        out.lines().find(|l| l.starts_with("NEXT read ")).map(|l| format!("{l}\n")).unwrap_or_default()
+        let Some(line) = out.lines().find(|l| l.starts_with("NEXT read ")) else { return String::new() };
+        let rest = &line["NEXT read ".len()..];
+        let rest = if rest.as_bytes().get(1) == Some(&b':') { &rest[2..] } else { rest };
+        format!("NEXT read {rest}\n")
     }
 
     /// Answers card image requests until `stop` is set; returns the paths asked for.
