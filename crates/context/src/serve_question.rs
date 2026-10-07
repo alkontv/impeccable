@@ -378,8 +378,8 @@ fn kept_world_card(cwd: &str, id: &str, kind: &str) -> Option<String> {
 /// loopback, link-local, or private services: a URL is fetched only when it
 /// sits under the configured card base (`IMPECCABLE_CARD_BASE`, else
 /// impeccable.style's), or is `https` to a named public-looking host (no IP
-/// literal, no userinfo, no single-label, `localhost`, `.local` or
-/// `.internal` name). Card fetches follow no redirect either. A URL that
+/// address in any spelling, no userinfo, no single-label, `localhost`,
+/// `.local` or `.internal` name). Card fetches follow no redirect either. A URL that
 /// fails this is still listed, by URL, for the agent to judge.
 fn card_fetch_allowed(env: &Env, url: &str) -> bool {
     let base = crate::concept_seed::card_base(env);
@@ -393,7 +393,12 @@ fn card_fetch_allowed(env: &Env, url: &str) -> bool {
     }
     let host = authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority).trim_end_matches('.').to_ascii_lowercase();
     let private_name = host == "localhost" || [".localhost", ".local", ".internal", ".lan", ".home.arpa"].iter().any(|s| host.ends_with(s));
-    host.contains('.') && host.parse::<std::net::IpAddr>().is_err() && !private_name
+    // A numeric host is an address however it is spelled (`127.1`,
+    // `0177.0.0.1`, `0x7f.1` all resolve to loopback), so the last label
+    // must be a name: letters only, or punycode.
+    let tld = host.rsplit('.').next().unwrap_or("");
+    let named = !tld.is_empty() && (tld.bytes().all(|b| b.is_ascii_alphabetic()) || (tld.starts_with("xn--") && tld.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')));
+    host.contains('.') && named && host.parse::<std::net::IpAddr>().is_err() && !private_name
 }
 
 /// Puts every dealt world's board and hero in the workspace and returns, per
@@ -2904,7 +2909,7 @@ mod tests {
         // The engine requests a card URL unasked only under the card base
         // or at an https, named, public-looking host.
         let env = Env::new();
-        for ok in ["https://impeccable.style/worlds/cards/a.webp", "https://cdn.example.com/a.webp", "https://cdn.example.com:8443/a.webp"] {
+        for ok in ["https://impeccable.style/worlds/cards/a.webp", "https://cdn.example.com/a.webp", "https://cdn.example.com:8443/a.webp", "https://cards.example.xn--p1ai/a.webp"] {
             assert!(card_fetch_allowed(&env, ok), "{ok}");
         }
         for no in [
@@ -2912,6 +2917,11 @@ mod tests {
             "http://impeccable.style/worlds/cards/a.webp",
             "https://127.0.0.1/a.webp",
             "https://169.254.169.254/latest/meta-data",
+            "https://127.1/a.webp",
+            "https://0177.0.0.1/a.webp",
+            "https://0x7f.0.0.1/a.webp",
+            "https://2130706433/a.webp",
+            "https://cdn.example.123/a.webp",
             "https://[::1]/a.webp",
             "https://localhost/a.webp",
             "https://localhost:8080/a.webp",
