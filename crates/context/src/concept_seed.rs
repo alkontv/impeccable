@@ -108,7 +108,7 @@ fn api_base(env: &Env) -> String {
     base.strip_suffix('/').unwrap_or(&base).to_string()
 }
 
-fn card_base(env: &Env) -> String {
+pub(crate) fn card_base(env: &Env) -> String {
     env.get("IMPECCABLE_CARD_BASE").filter(|v| !v.is_empty()).cloned().unwrap_or_else(|| "https://impeccable.style/worlds/cards".to_string())
 }
 

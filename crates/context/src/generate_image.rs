@@ -262,30 +262,6 @@ fn url_path(url: &str) -> &str {
     &url[..end]
 }
 
-/// The image type a path or URL's extension names: png, webp, or jpeg.
-pub(crate) fn extension_type(path: &str) -> Option<&'static str> {
-    let lower = path.to_ascii_lowercase();
-    if lower.ends_with(".png") {
-        Some("image/png")
-    } else if lower.ends_with(".webp") {
-        Some("image/webp")
-    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        Some("image/jpeg")
-    } else {
-        None
-    }
-}
-
-fn header_type(header: Option<&str>) -> Option<&'static str> {
-    let h = header?.split(';').next()?.trim().to_ascii_lowercase();
-    match h.as_str() {
-        "image/png" => Some("image/png"),
-        "image/webp" => Some("image/webp"),
-        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
-        _ => None,
-    }
-}
-
 fn sniffed_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
@@ -298,14 +274,15 @@ fn sniffed_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Downloads one png, webp, or jpeg image. The type is the response's
-/// Content-Type when it names one of the three, else the URL's extension,
-/// else the bytes' signature; a response that is none of them (an HTML error
-/// page, say) is refused rather than uploaded as an image. The error is a
-/// short reason with no OS-specific text; the caller names the URL.
-pub(crate) fn fetch_image(url: &str, timeout: std::time::Duration) -> Result<(Vec<u8>, &'static str), String> {
+/// Downloads one png, webp, or jpeg image. The bytes' signature decides the
+/// type and is required: a `200` HTML page behind a `.webp` URL or an image
+/// Content-Type (a soft 404, an auth wall, a proxy interstitial) is refused
+/// rather than uploaded or kept as an image. `redirects` is how many the
+/// request may follow. The error is a short reason with no OS-specific text;
+/// the caller names the URL.
+pub(crate) fn fetch_image(url: &str, timeout: std::time::Duration, redirects: u32) -> Result<(Vec<u8>, &'static str), String> {
     use std::io::Read;
-    let agent = crate::http::agent_builder().timeout_connect(timeout).timeout(timeout).build();
+    let agent = crate::http::agent_builder().timeout_connect(timeout).timeout(timeout).redirects(redirects).build();
     let response = match agent.get(url).call() {
         Ok(r) => r,
         Err(ureq::Error::Status(code, _)) => return Err(format!("HTTP {}", code)),
@@ -314,7 +291,6 @@ pub(crate) fn fetch_image(url: &str, timeout: std::time::Duration) -> Result<(Ve
     if !(200..300).contains(&response.status()) {
         return Err(format!("HTTP {}", response.status()));
     }
-    let header = response.header("Content-Type").map(str::to_string);
     let mut bytes = Vec::new();
     if response.into_reader().take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).is_err() {
         return Err("the response was cut short".into());
@@ -325,8 +301,7 @@ pub(crate) fn fetch_image(url: &str, timeout: std::time::Duration) -> Result<(Ve
     if bytes.is_empty() {
         return Err("the response was empty".into());
     }
-    let ty = header_type(header.as_deref()).or_else(|| extension_type(url_path(url))).or_else(|| sniffed_type(&bytes));
-    ty.map(|t| (bytes, t)).ok_or_else(|| "the response is not a png, webp, or jpeg image".into())
+    sniffed_type(&bytes).map(|t| (bytes, t)).ok_or_else(|| "the response is not a png, webp, or jpeg image".into())
 }
 
 /// The multipart file name for a URL ref: its last path segment.
@@ -442,7 +417,7 @@ fn run_with_api_base(args: &[String], io: &mut Io, api_base: &str) -> i32 {
             // A URL ref (a catalog world's card image, say) is downloaded
             // and attached like a file; nothing is written when one fails.
             let (bytes, ty, filename) = if is_url(r) {
-                match fetch_image(r, REF_DOWNLOAD_TIMEOUT) {
+                match fetch_image(r, REF_DOWNLOAD_TIMEOUT, 5) {
                     Ok((bytes, ty)) => (bytes, ty, url_file_name(r)),
                     Err(reason) => {
                         io.err(&format!("generate-image: could not download --ref {}: {}; nothing was generated.\n", r, reason));
@@ -726,32 +701,34 @@ mod tests {
         let handle = serve(
             server,
             vec![
-                // Typed by the response header, by the URL extension (the
-                // header says nothing useful), and by the bytes alone.
+                // The bytes decide the type, whatever the header and the
+                // URL's extension say (or do not say).
                 ("/cards/world.webp?v=2", 200, "image/webp; charset=binary", webp),
                 ("/cards/world-hero.png", 200, "application/octet-stream", png_fake("hero", 8, 8)),
                 ("/cards/blob", 200, "", vec![0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]),
+                ("/cards/mislabeled.webp", 200, "image/webp", png_fake("mislabeled", 8, 8)),
             ],
-            4,
+            5,
         );
-        let (board, hero, blob) = (format!("{base}/cards/world.webp?v=2"), format!("{base}/cards/world-hero.png"), format!("{base}/cards/blob"));
+        let (board, hero, blob, mislabeled) = (format!("{base}/cards/world.webp?v=2"), format!("{base}/cards/world-hero.png"), format!("{base}/cards/blob"), format!("{base}/cards/mislabeled.webp"));
         let env = Env::from([("OPENAI_API_KEY".into(), "test-key".into())]);
         let (mut io, captured) = Io::captured("", dir.clone(), env);
-        let args: Vec<String> = ["--prompt", "Comp with cards", "--out", "comp.png", "--ref", &board, "--ref", "local.png", "--ref", &hero, "--ref", &blob].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["--prompt", "Comp with cards", "--out", "comp.png", "--ref", &board, "--ref", "local.png", "--ref", &hero, "--ref", &blob, "--ref", &mislabeled].iter().map(|s| s.to_string()).collect();
         let exit = run_with_api_base(&args, &mut io, &base);
         let seen = handle.join().unwrap();
         let stderr = String::from_utf8(captured.stderr.borrow().clone()).unwrap();
         assert_eq!(exit, 0, "{stderr}");
         let paths: Vec<(&str, &str)> = seen.iter().map(|r| (r.0.as_str(), r.1.as_str())).collect();
-        assert_eq!(paths, vec![("GET", "/cards/world.webp?v=2"), ("GET", "/cards/world-hero.png"), ("GET", "/cards/blob"), ("POST", "/images/edits")]);
-        let body = &seen[3].2;
+        assert_eq!(paths, vec![("GET", "/cards/world.webp?v=2"), ("GET", "/cards/world-hero.png"), ("GET", "/cards/blob"), ("GET", "/cards/mislabeled.webp"), ("POST", "/images/edits")]);
+        let body = &seen[4].2;
         assert!(body.contains("name=\"image[]\"; filename=\"world.webp\"\r\nContent-Type: image/webp\r\n\r\nRIFF"), "{body}");
         assert!(body.contains("name=\"image[]\"; filename=\"local.png\"\r\nContent-Type: image/png\r\n"), "{body}");
         assert!(body.contains("name=\"image[]\"; filename=\"world-hero.png\"\r\nContent-Type: image/png\r\n"), "{body}");
         assert!(body.contains("name=\"image[]\"; filename=\"blob\"\r\nContent-Type: image/jpeg\r\n"), "{body}");
+        assert!(body.contains("name=\"image[]\"; filename=\"mislabeled.webp\"\r\nContent-Type: image/png\r\n"), "{body}");
         // The sidecar records each ref as it was given: the URL itself.
         let sidecar: Value = serde_json::from_slice(&std::fs::read(dir.join("comp.png.json")).unwrap()).unwrap();
-        assert_eq!(sidecar["refs"], serde_json::json!([board, "local.png", hero, blob]));
+        assert_eq!(sidecar["refs"], serde_json::json!([board, "local.png", hero, blob, mislabeled]));
         assert!(dir.join("comp.png").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -762,7 +739,7 @@ mod tests {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let base = format!("http://{}", server.server_addr());
         let dir = temp("url-ref-fail");
-        let handle = serve(server, vec![("/cards/page.html", 200, "text/html", b"<html>blocked</html>".to_vec())], 2);
+        let handle = serve(server, vec![("/cards/page.html", 200, "text/html", b"<html>blocked</html>".to_vec()), ("/cards/world.webp", 200, "image/webp", b"<html>sign in</html>".to_vec())], 3);
         let run_ref = |url: &str| {
             let env = Env::from([("OPENAI_API_KEY".into(), "test-key".into())]);
             let (mut io, captured) = Io::captured("", dir.clone(), env);
@@ -781,7 +758,12 @@ mod tests {
         let (exit, err, _) = run_ref(&page);
         assert_eq!(exit, 1);
         assert_eq!(err, format!("generate-image: could not download --ref {page}: the response is not a png, webp, or jpeg image; nothing was generated.\n"));
-        // Only the two downloads reached the server: no generation request.
+        // A 200 page behind an image URL and an image Content-Type is still not an image.
+        let wall = format!("{base}/cards/world.webp");
+        let (exit, err, _) = run_ref(&wall);
+        assert_eq!(exit, 1);
+        assert_eq!(err, format!("generate-image: could not download --ref {wall}: the response is not a png, webp, or jpeg image; nothing was generated.\n"));
+        // Only the three downloads reached the server: no generation request.
         let seen = handle.join().unwrap();
         assert!(seen.iter().all(|r| r.0 == "GET"), "{seen:?}");
         // An unreachable host reads the same on every OS.
@@ -813,10 +795,8 @@ mod tests {
         assert_eq!(url_file_name("https://x.test/cards/a-hero.webp?v=1#f"), "a-hero.webp");
         assert_eq!(url_file_name("https://x.test/"), "ref");
         assert_eq!(url_file_name("https://x.test"), "ref");
-        assert_eq!(extension_type("A.JPG"), Some("image/jpeg"));
-        assert_eq!(extension_type("a.gif"), None);
-        assert_eq!(header_type(Some("image/jpg")), Some("image/jpeg"));
-        assert_eq!(header_type(Some("text/html; charset=utf-8")), None);
+        assert_eq!(sniffed_type(b"<html>"), None);
+        assert_eq!(sniffed_type(b"RIFF\x10\0\0\0WEBPVP8 "), Some("image/webp"));
         assert!(is_url("http://a") && is_url("https://a") && !is_url("refs/a.png") && !is_url("ftp://a"));
     }
 
