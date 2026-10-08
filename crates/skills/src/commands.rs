@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::bundle::{self, download};
 use crate::engine_binary::install_engine_binaries;
-use crate::hook_manifest::{self, copy_provider_hooks, hook_installed_for_provider, HOOK_EXPLAINER};
+use crate::hook_manifest::{self, copy_provider_hooks, hook_installed_for_provider, hook_installed_for_provider_at_scope, HOOK_EXPLAINER};
 use crate::prompt::{CheckboxOption, Prompt, RadioOption};
 use crate::providers::*;
 use crate::util::{self, pad_end, utf16_len, utf16_prefix};
@@ -594,7 +594,7 @@ fn install(flags: &[String], io: &mut Io) -> R<()> {
                     .copied()
                     .filter(|p| {
                         let manifest_root = if scope == Scope::User && *p == ".claude" { &install_root } else { &hook_root };
-                        !hook_installed_for_provider(manifest_root, p)
+                        !hook_installed_for_provider_at_scope(manifest_root, p, scope == Scope::User)
                     })
                     .collect()
             } else {

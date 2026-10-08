@@ -755,6 +755,10 @@ fn existing_user_install_ignores_project_hook_when_user_hook_is_missing() {
     assert_eq!(first.code, 0, "{}\n{}", first.stdout, first.stderr);
     std::fs::remove_file(format!("{home}/.claude/settings.json")).unwrap();
     write(
+        &format!("{home}/.claude/settings.local.json"),
+        r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"\"~/.claude/skills/impeccable/scripts/impeccable\" hook"}]}]}}"#,
+    );
+    write(
         &format!("{project}/.claude/settings.local.json"),
         r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"\"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/impeccable\" hook"}]}]}}"#,
     );
@@ -762,6 +766,7 @@ fn existing_user_install_ignores_project_hook_when_user_hook_is_missing() {
     let second = run_cli(&args, &project, &env);
     assert_eq!(second.code, 0, "{}\n{}", second.stdout, second.stderr);
     assert!(manifest_names_launcher(&format!("{home}/.claude/settings.json"), &home, ".claude"));
+    assert!(!std::path::Path::new(&format!("{home}/.claude/settings.local.json")).exists());
     assert!(!std::path::Path::new(&format!("{project}/.claude/settings.local.json")).exists());
     std::fs::remove_dir_all(&root).ok();
 }

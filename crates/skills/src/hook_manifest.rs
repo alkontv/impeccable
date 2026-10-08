@@ -351,6 +351,15 @@ pub fn hook_installed_for_provider(root: &str, provider: &str) -> bool {
     })
 }
 
+/// User-scoped Claude hooks are loaded only from `settings.json`; the
+/// project-only `settings.local.json` path must not satisfy a global install.
+pub fn hook_installed_for_provider_at_scope(root: &str, provider: &str, user_scope: bool) -> bool {
+    if user_scope && provider == ".claude" {
+        return file_has_impeccable_hook_marker(&jsp::join(&[root, ".claude", "settings.json"]));
+    }
+    hook_installed_for_provider(root, provider)
+}
+
 fn marker_in(entry: &Map<String, Value>, key: &str) -> bool {
     entry.get(key).map(value_has_impeccable_hook_marker).unwrap_or(false)
 }
@@ -523,7 +532,8 @@ pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: 
                 written.push(provider);
             }
         }
-        if user_scope && *provider == ".claude" {
+        let user_manifest = jsp::join(&[skill_root, ".claude", "settings.json"]);
+        if user_scope && *provider == ".claude" && file_has_impeccable_hook_marker(&user_manifest) {
             prune_impeccable_hook_from_manifest(&jsp::join(&[skill_root, ".claude", "settings.local.json"]))?;
             let project_root = project_root.unwrap_or(root);
             let project_local = jsp::join(&[project_root, ".claude", "settings.local.json"]);

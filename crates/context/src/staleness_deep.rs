@@ -249,17 +249,24 @@ pub fn check_hook_installation(
     }
     let project_roots = unique_roots(project_root, repo_root);
     let mut manifest_roots = project_roots.clone();
+    let mut user_manifest_root: Option<String> = None;
     if provider_id == "claude-code" {
         if let Some(root) = user_root.filter(|root| !root.is_empty()) {
             let root = jsp::resolve(root, &[]);
             if !manifest_roots.contains(&root) {
+                user_manifest_root = Some(root.clone());
                 manifest_roots.push(root);
             }
         }
     }
     let mut installed_at: Option<String> = None;
     for root in &manifest_roots {
-        for rel in manifests {
+        let root_manifests: &[&str] = if user_manifest_root.as_deref() == Some(root.as_str()) {
+            &[".claude/settings.json"]
+        } else {
+            manifests
+        };
+        for rel in root_manifests {
             let mp = jsp::join(&[root, rel]);
             let Some(raw) = read_json(&mp) else { continue };
             let Some(hooks) = raw.get("hooks") else { continue };
@@ -527,6 +534,11 @@ mod tests {
                 r#"{{"hooks":{{"PostToolUse":[{{"hooks":[{{"type":"command","command":"\"{}\" hook"}}]}}]}}}}"#,
                 launcher
             ),
+        );
+        write(
+            &home,
+            ".claude/settings.local.json",
+            r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"\"/missing/user-local/impeccable\" hook"}]}]}}"#,
         );
         assert!(check_hook_installation(&project, None, "claude-code", Some(&home)).is_empty());
 
