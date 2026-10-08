@@ -711,6 +711,10 @@ fn user_scope_update_writes_claude_user_settings() {
         &format!("{home}/.claude/settings.local.json"),
         r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"node \"~/.claude/skills/impeccable/scripts/hook.mjs\""}]}]}}"#,
     );
+    write(
+        &format!("{project}/.claude/settings.local.json"),
+        r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"node \"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs\""}]}]}}"#,
+    );
     let bundle = create_fake_universal_bundle(&project, &[".claude"]);
     let env = base_env(&home, &tmpdir, &bundle);
 
@@ -729,6 +733,35 @@ fn user_scope_update_writes_claude_user_settings() {
         !std::path::Path::new(&format!("{home}/.claude/settings.local.json")).exists(),
         "Claude Code does not load settings.local.json from user scope"
     );
+    assert!(!std::path::Path::new(&format!("{project}/.claude/settings.local.json")).exists());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn existing_user_install_ignores_project_hook_when_user_hook_is_missing() {
+    let root = temp_root("claude-user-hook-backfill");
+    let project = format!("{root}/project");
+    let home = format!("{root}/home");
+    let tmpdir = format!("{root}/tmp");
+    for dir in [&project, &home, &tmpdir] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::create_dir_all(format!("{project}/.git")).unwrap();
+    let bundle = create_fake_universal_bundle(&project, &[".claude"]);
+    let env = base_env(&home, &tmpdir, &bundle);
+    let args = ["install", "-y", "--user", "--providers=claude"];
+
+    let first = run_cli(&args, &project, &env);
+    assert_eq!(first.code, 0, "{}\n{}", first.stdout, first.stderr);
+    std::fs::remove_file(format!("{home}/.claude/settings.json")).unwrap();
+    write(
+        &format!("{project}/.claude/settings.local.json"),
+        r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"\"${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/impeccable\" hook"}]}]}}"#,
+    );
+
+    let second = run_cli(&args, &project, &env);
+    assert_eq!(second.code, 0, "{}\n{}", second.stdout, second.stderr);
+    assert!(manifest_names_launcher(&format!("{home}/.claude/settings.json"), &home, ".claude"));
     assert!(!std::path::Path::new(&format!("{project}/.claude/settings.local.json")).exists());
     std::fs::remove_dir_all(&root).ok();
 }

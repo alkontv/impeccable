@@ -479,7 +479,7 @@ fn json_parse_message(e: &serde_json::Error) -> String {
 
 /// JS: copyProviderHooks(bundleDir, root, providers, {force, skillRoot}).
 /// Returns the providers whose manifest was written (deduplicated, in order).
-pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: &str, providers: &[&'static str], force: bool, skill_root: Option<&str>) -> Result<Vec<&'static str>, String> {
+pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: &str, providers: &[&'static str], force: bool, skill_root: Option<&str>, project_root: Option<&str>) -> Result<Vec<&'static str>, String> {
     let skill_root = skill_root.unwrap_or(root);
     let user_scope = sys.is_home_dir(skill_root);
     let mut written: Vec<&'static str> = Vec::new();
@@ -525,6 +525,11 @@ pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: 
         }
         if user_scope && *provider == ".claude" {
             prune_impeccable_hook_from_manifest(&jsp::join(&[skill_root, ".claude", "settings.local.json"]))?;
+            let project_root = project_root.unwrap_or(root);
+            let project_local = jsp::join(&[project_root, ".claude", "settings.local.json"]);
+            if !sys.is_home_dir(project_root) {
+                prune_impeccable_hook_from_manifest(&project_local)?;
+            }
         }
     }
     Ok(written)
