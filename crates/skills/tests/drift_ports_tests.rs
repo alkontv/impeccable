@@ -675,7 +675,8 @@ fn global_install_rewrites_grok_project_hooks_to_the_global_skill_path() {
     }
     // Launcher-era adaptation: the JS asserted the rewritten hook.mjs path;
     // the engine writes the launcher form pointing at the same global root.
-    assert!(manifest_names_launcher(&format!("{tmp}/.claude/settings.local.json"), &home, ".claude"));
+    assert!(manifest_names_launcher(&format!("{home}/.claude/settings.json"), &home, ".claude"));
+    assert!(!std::path::Path::new(&format!("{home}/.claude/settings.local.json")).exists());
     assert!(manifest_names_launcher(&format!("{tmp}/.codex/hooks.json"), &home, ".agents"));
     assert!(manifest_names_launcher(&format!("{tmp}/.cursor/hooks.json"), &home, ".cursor"));
     let grok_manifest = format!("{tmp}/.grok/hooks/impeccable.json");
@@ -688,6 +689,47 @@ fn global_install_rewrites_grok_project_hooks_to_the_global_skill_path() {
         !grok_hooks.contains("\\\".grok/skills/impeccable/scripts/hook.mjs\\\"") && !grok_hooks.contains("hook.mjs"),
         "grok hook still points at the project-relative bundle command: {grok_hooks}"
     );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn user_scope_update_writes_claude_user_settings() {
+    let root = temp_root("claude-user-settings");
+    let project = format!("{root}/project");
+    let home = format!("{root}/home");
+    let tmpdir = format!("{root}/tmp");
+    for dir in [&project, &home, &tmpdir] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::create_dir_all(format!("{project}/.git")).unwrap();
+    write(
+        &format!("{home}/.claude/skills/impeccable/SKILL.md"),
+        "---\nname: impeccable\nversion: 1.0.0\n---\n",
+    );
+    write(&format!("{home}/.claude/settings.json"), r#"{"model":"claude-sonnet-5"}"#);
+    write(
+        &format!("{home}/.claude/settings.local.json"),
+        r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"node \"~/.claude/skills/impeccable/scripts/hook.mjs\""}]}]}}"#,
+    );
+    let bundle = create_fake_universal_bundle(&project, &[".claude"]);
+    let env = base_env(&home, &tmpdir, &bundle);
+
+    let r = run_cli(&["update", "-y", "--user"], &project, &env);
+
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+    let settings = format!("{home}/.claude/settings.json");
+    assert!(
+        manifest_names_launcher(&settings, &home, ".claude"),
+        "user settings do not name the user-scope launcher: {}",
+        std::fs::read_to_string(&settings).unwrap_or_default()
+    );
+    let settings_json: Value = serde_json::from_str(&read(&settings)).unwrap();
+    assert_eq!(settings_json["model"], "claude-sonnet-5");
+    assert!(
+        !std::path::Path::new(&format!("{home}/.claude/settings.local.json")).exists(),
+        "Claude Code does not load settings.local.json from user scope"
+    );
+    assert!(!std::path::Path::new(&format!("{project}/.claude/settings.local.json")).exists());
     std::fs::remove_dir_all(&root).ok();
 }
 

@@ -68,6 +68,17 @@ pub fn hook_artifacts_for_provider(bundle_dir: &str, root: &str, provider: &str)
         .collect()
 }
 
+fn hook_artifacts_for_install(bundle_dir: &str, root: &str, provider: &str, user_scope: bool) -> Vec<HookArtifact> {
+    if provider == ".claude" && user_scope {
+        return vec![HookArtifact {
+            src: jsp::join(&[bundle_dir, ".claude", "settings.json"]),
+            dest: jsp::join(&[root, ".claude", "settings.json"]),
+            shared_dest: None,
+        }];
+    }
+    hook_artifacts_for_provider(bundle_dir, root, provider)
+}
+
 /// JS: expectedHookDests(root, providers)
 pub fn expected_hook_dests(root: &str, providers: &[&str]) -> Vec<String> {
     providers
@@ -321,8 +332,8 @@ fn backup_commented(path: &str, had_comments: bool) -> Result<(), String> {
 
 /// A provider whose hook manifest is the user's whole settings file (model,
 /// auth, MCP servers), so an unreadable one is never replaced wholesale.
-fn manifest_is_user_settings(provider: &str) -> bool {
-    provider == ".gemini"
+fn manifest_is_user_settings(provider: &str, user_scope: bool) -> bool {
+    provider == ".gemini" || (provider == ".claude" && user_scope)
 }
 
 /// JS: hookInstalledForProvider(root, provider)
@@ -470,9 +481,11 @@ fn json_parse_message(e: &serde_json::Error) -> String {
 /// Returns the providers whose manifest was written (deduplicated, in order).
 pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: &str, providers: &[&'static str], force: bool, skill_root: Option<&str>) -> Result<Vec<&'static str>, String> {
     let skill_root = skill_root.unwrap_or(root);
+    let user_scope = sys.is_home_dir(skill_root);
     let mut written: Vec<&'static str> = Vec::new();
     for provider in providers {
-        for artifact in hook_artifacts_for_provider(bundle_dir, root, provider) {
+        let manifest_root = if user_scope && *provider == ".claude" { skill_root } else { root };
+        for artifact in hook_artifacts_for_install(bundle_dir, manifest_root, provider, user_scope) {
             if !util::exists(&artifact.src) {
                 continue;
             }
@@ -492,7 +505,7 @@ pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: 
                         backup_commented(&artifact.dest, had_comments)?;
                         next = merge_hook_manifests(&existing, &fresh);
                     }
-                    None if manifest_is_user_settings(provider) => {
+                    None if manifest_is_user_settings(provider, user_scope) => {
                         return Err(format!("Existing settings file is not valid JSON: {}. It holds your other settings too, so it is never replaced; fix it and re-run.", artifact.dest));
                     }
                     None => {
@@ -509,6 +522,9 @@ pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: 
             if !written.contains(provider) {
                 written.push(provider);
             }
+        }
+        if user_scope && *provider == ".claude" {
+            prune_impeccable_hook_from_manifest(&jsp::join(&[skill_root, ".claude", "settings.local.json"]))?;
         }
     }
     Ok(written)
