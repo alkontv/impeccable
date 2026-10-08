@@ -748,7 +748,7 @@ fn repair_hook_manifests(rt: &Runtime, cwd: &str) -> Result<Repaired, String> {
         skipped: vec![],
     };
     for target in HOOK_MANIFEST_TARGETS {
-        let dest = jsp::join(&[cwd, target.dest_rel]);
+        let mut dest = jsp::join(&[cwd, target.dest_rel]);
         let shared_dest = target.shared_dest_rel.map(|s| jsp::join(&[cwd, s]));
         let project_skill = jsp::join(&[cwd, target.skill_rel]);
         let user_skill = jsp::join(&[&rt.homedir(), target.skill_rel]);
@@ -766,8 +766,12 @@ fn repair_hook_manifests(rt: &Runtime, cwd: &str) -> Result<Repaired, String> {
         if let Some(sd) = &shared_dest {
             if file_has_impeccable_hook_marker(sd) {
                 prune_impeccable_hook_from_manifest(&dest)?;
-                result.already.push(target.provider.to_string());
-                continue;
+                if user_scoped {
+                    dest = sd.clone();
+                } else {
+                    result.already.push(target.provider.to_string());
+                    continue;
+                }
             }
         }
         let fresh = if target.provider == ".claude" && user_scoped {
