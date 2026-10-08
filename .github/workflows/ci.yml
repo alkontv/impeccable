@@ -213,9 +213,13 @@ jobs:
           "TMP=$temp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       # The first Chrome start after boot reads the browser off that same C:
       # drive and has taken 25 s to open its DevTools port, against the
-      # launcher's 30 s limit. Pay that once here, where nothing is timing it.
+      # launcher's 30 s limit. Pay that once here, where no test is timing it.
+      # The step has taken 4 to 38 s; a start that never returns ends after
+      # three minutes and the tests run anyway.
       - name: Start the browser once before the tests
         shell: pwsh
+        timeout-minutes: 3
+        continue-on-error: true
         run: |
           $chrome = Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'
           if (Test-Path $chrome) {
